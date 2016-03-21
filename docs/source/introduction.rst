@@ -8,6 +8,9 @@ common bugs. Mypy is a static analyzer, or a lint-like tool: type
 annotations are just hints and are not enforced when running your
 program. You run your program with a standard Python interpreter, and
 the annotations are treated basically as comments.
+Mypy 是一个 python 语言的静态类型检查器。如果你在你的代码中使用了 python3
+的函数标注语法(使用 PEP484 的记号)，那么 mypy 可以对你的代码进行类型检查，
+发现一些一般的错误。
 
 Mypy has a powerful but easy-to-use type system with modern features
 such as type inference, generics, function types, tuple types and
