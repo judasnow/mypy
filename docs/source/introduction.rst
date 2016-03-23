@@ -23,7 +23,10 @@ This document is a short introduction to mypy. It will get you started
 writing statically typed code. Knowledge of Python 3.x and some kind
 of a statically typed object-oriented language such as Java are
 assumed.
+此文档是一个 mypy 简短的介绍。他将引导你开始编写静态类型的代码。我们假设
+你了解 py3 以及 java 之类的静态面向对象语言。
 
 .. note::
    Mypy is still experimental. There will be changes
    that break backward compatibility.
+   Mypy 依旧是实验性质的。存在不向后兼容的可能性。

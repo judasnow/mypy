@@ -4,6 +4,9 @@ Basics
 This chapter introduces some core concepts of mypy, including function
 annotations, the ``typing`` module and library stubs. Read it carefully,
 as the rest of documentation may not make much sense otherwise.
+这一章将介绍一些 mypy 的核心概念，包括函数注解，``typing`` 模块以及库桩（library stubs），
+请仔细阅读本章，否则后面章节的内容会让你感到困惑。
+
 
 Function signatures
 *******************
@@ -14,6 +17,9 @@ syntax. This makes the function statically typed (the type checker
 reports type errors within the function). A function without a
 type annotation is dynamically typed, and identical to ordinary
 Python:
+没有类型签名的函数被归为动态类型。你可以使用 py3 的标注语法来定义一个函数
+的签名。定义了签名的方法将被归为静态类型（类型检查器将会报告此方法中的类型
+错误）。没有类型签名的方法将看作是动态类型的，等同于普通的 py 函数。
 
 .. code-block:: python
 
@@ -22,6 +28,7 @@ Python:
 
 This version of the above function is statically typed (but it's still
 valid Python):
+上面的函数可以写成下面的静态类型（仍然是有效的 py 代码）
 
 .. code-block:: python
 
@@ -31,6 +38,8 @@ valid Python):
 A ``None`` return type indicates a function that does not explicitly
 return a value. Using a ``None`` result in a statically typed context
 results in a type check error:
+``None`` 返回类型指明一个函数不显式的返回一个值。在静态类型的上下文中使用
+``None`` 作为返回值会触发一个类型错误。
 
 .. code-block:: python
 
