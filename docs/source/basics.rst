@@ -46,7 +46,7 @@ results in a type check error:
    def p() -> None:
        print('hello')
 
-   a = p()   # Type check error: p has None return value
+   a = p()   # Type check error: p has None return value p 并不 返回一个值
 
 The typing module
 *****************
@@ -54,6 +54,8 @@ The typing module
 We cheated a bit in the above examples: a module is type checked only
 if it imports the module ``typing``. Here is a complete statically typed
 example from the previous section:
+其实事实与我们上面看到的有些不符，模块只有在 import 了 `` typing`` 模块的时候
+
 
 .. code-block:: python
 
