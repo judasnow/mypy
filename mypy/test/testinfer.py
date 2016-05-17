@@ -2,7 +2,7 @@
 
 import typing
 
-from mypy.myunit import Suite, assert_equal, assert_true, run_test
+from mypy.myunit import Suite, assert_equal, assert_true
 from mypy.checkexpr import map_actuals_to_formals
 from mypy.nodes import ARG_POS, ARG_OPT, ARG_STAR, ARG_STAR2, ARG_NAMED
 from mypy.types import AnyType, TupleType
@@ -158,6 +158,12 @@ class MapActualsToFormalsSuite(Suite):
         self.assert_map([ARG_STAR, ARG_STAR2],
                         [ARG_STAR, ARG_STAR2],
                         [[0], [1]])
+        self.assert_map([ARG_STAR2],
+                        [(ARG_POS, 'x'), ARG_STAR2],
+                        [[0], [0]])
+        self.assert_map([ARG_STAR2],
+                        [ARG_STAR2],
+                        [[0]])
 
     def assert_map(self, caller_kinds, callee_kinds, expected):
         caller_kinds, caller_names = expand_caller_kinds(caller_kinds)
@@ -205,8 +211,3 @@ def expand_callee_kinds(kinds_and_names):
             kinds.append(v)
             names.append(None)
     return kinds, names
-
-
-if __name__ == '__main__':
-    import sys
-    run_test(MapActualsToFormalsSuite(), sys.argv[1:])

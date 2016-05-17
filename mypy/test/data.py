@@ -24,7 +24,7 @@ def parse_test_cases(
 
     if not include_path:
         include_path = os.path.dirname(path)
-    l = open(path).readlines()
+    l = open(path, encoding='utf-8').readlines()
     for i in range(len(l)):
         l[i] = l[i].rstrip('\n')
     p = parse_test_data(l, path)
@@ -45,12 +45,16 @@ def parse_test_cases(
                     # Record an extra file needed for the test case.
                     files.append((os.path.join(base_path, p[i].arg),
                                   '\n'.join(p[i].data)))
-                elif p[i].id == 'builtins':
+                elif p[i].id in ('builtins', 'builtins_py2'):
                     # Use a custom source file for the std module.
                     mpath = os.path.join(os.path.dirname(path), p[i].arg)
                     f = open(mpath)
-                    files.append((os.path.join(base_path, 'builtins.py'),
-                                  f.read()))
+                    if p[i].id == 'builtins':
+                        fnam = 'builtins.py'
+                    else:
+                        # Python 2
+                        fnam = '__builtin__.py'
+                    files.append((os.path.join(base_path, fnam), f.read()))
                     f.close()
                 else:
                     raise ValueError(
@@ -294,6 +298,7 @@ def expand_errors(input, output, fnam):
     """
 
     for i in range(len(input)):
-        m = re.search('# E: (.*)$', input[i])
+        m = re.search('# ([EN]): (.*)$', input[i])
         if m:
-            output.append('{}:{}: error: {}'.format(fnam, i + 1, m.group(1)))
+            severity = 'error' if m.group(1) == 'E' else 'note'
+            output.append('{}:{}: {}: {}'.format(fnam, i + 1, severity, m.group(2)))

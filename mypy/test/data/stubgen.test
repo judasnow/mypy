@@ -16,7 +16,7 @@ def g(arg):
 def f(a, b): ...
 def g(arg): ...
 
-[case testDefaltArgInt]
+[case testDefaultArgInt]
 def f(a, b=2): ...
 def g(b=-1, c=0): ...
 [out]
@@ -79,7 +79,7 @@ x = 1
 [out]
 from typing import Any
 
-x = ... # type: Any
+x = ...  # type: Any
 
 [case testClassVariable]
 class C:
@@ -88,7 +88,7 @@ class C:
 from typing import Any
 
 class C:
-    x = ... # type: Any
+    x = ...  # type: Any
 
 [case testSelfAssignment]
 class C:
@@ -99,7 +99,7 @@ class C:
 from typing import Any
 
 class C:
-    x = ... # type: Any
+    x = ...  # type: Any
     def __init__(self): ...
 
 [case testSelfAndClassBodyAssignment]
@@ -112,10 +112,10 @@ class C:
 [out]
 from typing import Any
 
-x = ... # type: Any
+x = ...  # type: Any
 
 class C:
-    x = ... # type: Any
+    x = ...  # type: Any
     def __init__(self): ...
 
 [case testEmptyClass]
@@ -166,16 +166,16 @@ x, y = 1, 2
 [out]
 from typing import Any
 
-x = ... # type: Any
-y = ... # type: Any
+x = ...  # type: Any
+y = ...  # type: Any
 
 [case testMultipleAssignment2]
 [x, y] = 1, 2
 [out]
 from typing import Any
 
-x = ... # type: Any
-y = ... # type: Any
+x = ...  # type: Any
+y = ...  # type: Any
 
 [case testKeywordOnlyArg]
 def f(x, *, y=1): ...
@@ -260,7 +260,7 @@ class B(ValueError): ...
 class A(Exception): ...
 class B(ValueError): ...
 
-[case testOmitSomeSpecialMethos]
+[case testOmitSomeSpecialMethods]
 class A:
     def __str__(self): ...
     def __repr__(self): ...
@@ -306,7 +306,7 @@ class A:
 from typing import Any
 
 class A:
-    x = ... # type: Any
+    x = ...  # type: Any
     def f(self): ...
 
 [case testMultiplePrivateDefs]
@@ -325,12 +325,44 @@ __all__ = ['match', 'sub', 'x']
 x = 1
 [out]
 from typing import Any
+from re import match as match, sub as sub
+
+x = ...  # type: Any
+
+[case testExportModule_import]
 import re
+__all__ = ['re', 'x']
+x = 1
+y = 2
+[out]
+from typing import Any
+import re as re
 
-match = re.match
-sub = re.sub
+x = ...  # type: Any
 
-x = ... # type: Any
+[case testExportModuleAs_import]
+import re as rex
+__all__ = ['rex', 'x']
+x = 1
+y = 2
+[out]
+from typing import Any
+import re as rex
+
+x = ...  # type: Any
+
+[case testExportModuleInPackage_import]
+import urllib.parse as p
+__all__ = ['p']
+[out]
+import urllib.parse as p
+
+[case testExportModuleInPackageUnsupported_import]
+import urllib.parse
+__all__ = ['urllib']
+[out]
+# Names in __all__ with no definition:
+#   urllib
 
 [case testRelativeImportAll]
 from .x import *
@@ -348,7 +380,7 @@ from typing import Any
 
 def f(): ...
 
-x = ... # type: Any
+x = ...  # type: Any
 
 class C:
     def g(self): ...
@@ -400,6 +432,7 @@ def f(): ...
 X = _namedtuple('X', 'a b')
 def g(): ...
 [out]
+from collections import namedtuple as _namedtuple
 from collections import namedtuple
 
 def f(): ...
@@ -484,28 +517,38 @@ from typing import Any
 
 class A:
     class B:
-        x = ... # type: Any
+        x = ...  # type: Any
         def f(self): ...
     def g(self): ...
 
 [case testExportViaRelativeImport]
 from .api import get
 [out]
-from . import api
-
-get = api.get
+from .api import get as get
 
 [case testExportViaRelativePackageImport]
 from .packages.urllib3.contrib import parse
 [out]
-from .packages.urllib3 import contrib
-
-parse = contrib.parse
+from .packages.urllib3.contrib import parse as parse
 
 [case testNoExportViaRelativeImport]
 from . import get
 [out]
 
+[case testRelativeImportAndBase]
+from .x import X
+class A(X):
+     pass
+[out]
+from .x import X as X
+
+class A(X): ...
+
+[case testDuplicateDef]
+def syslog(a): pass
+def syslog(a): pass
+[out]
+def syslog(a): ...
 
 -- More features/fixes:
 --   do not export deleted names

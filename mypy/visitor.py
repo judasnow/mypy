@@ -2,7 +2,9 @@
 
 from typing import TypeVar, Generic
 
-import mypy.nodes
+if False:
+    # break import cycle only needed for mypy
+    import mypy.nodes
 
 
 T = TypeVar('T')
@@ -81,12 +83,6 @@ class NodeVisitor(Generic[T]):
         pass
 
     def visit_assert_stmt(self, o: 'mypy.nodes.AssertStmt') -> T:
-        pass
-
-    def visit_yield_stmt(self, o: 'mypy.nodes.YieldStmt') -> T:
-        pass
-
-    def visit_yield_from_stmt(self, o: 'mypy.nodes.YieldFromStmt') -> T:
         pass
 
     def visit_del_stmt(self, o: 'mypy.nodes.DelStmt') -> T:
@@ -169,6 +165,9 @@ class NodeVisitor(Generic[T]):
     def visit_cast_expr(self, o: 'mypy.nodes.CastExpr') -> T:
         pass
 
+    def visit_reveal_type_expr(self, o: 'mypy.nodes.RevealTypeExpr') -> T:
+        pass
+
     def visit_super_expr(self, o: 'mypy.nodes.SuperExpr') -> T:
         pass
 
@@ -212,6 +211,9 @@ class NodeVisitor(Generic[T]):
         pass
 
     def visit_conditional_expr(self, o: 'mypy.nodes.ConditionalExpr') -> T:
+        pass
+
+    def visit_backquote_expr(self, o: 'mypy.nodes.BackquoteExpr') -> T:
         pass
 
     def visit_type_var_expr(self, o: 'mypy.nodes.TypeVarExpr') -> T:

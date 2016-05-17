@@ -294,6 +294,20 @@ def f(x, y: Z): # type: (x, y) -> z
 file: note: In function "f":
 file:1: error: Function has duplicate type signatures
 
+[case testTooManyTypes]
+def f(x, y): # type: (X, Y, Z) -> z
+  pass
+[out]
+file: note: In function "f":
+file:1: error: Type signature has too many arguments
+
+[case testTooFewTypes]
+def f(x, y): # type: (X) -> z
+  pass
+[out]
+file: note: In function "f":
+file:1: error: Type signature has too few arguments
+
 [case testCommentFunctionAnnotationVarArgMispatch]
 def f(x): # type: (*X) -> Y
     pass
@@ -439,11 +453,41 @@ file:2: error: Unknown encoding 'uft-8'
 [out]
 file:1: error: Unknown encoding 'Uft.8'
 
-[case testInvalidEncoding2]
+[case testInvalidEncoding3]
 #!/usr/bin python
 # vim: set fileencoding=uft8 :
 [out]
 file:2: error: Unknown encoding 'uft8'
+
+[case testDoubleEncoding]
+# coding: uft8
+# coding: utf8
+# The first coding cookie should be used and fail.
+[out]
+file:1: error: Unknown encoding 'uft8'
+
+[case testDoubleEncoding2]
+# Again the first cookie should be used and fail.
+# coding: uft8
+# coding: utf8
+[out]
+file:2: error: Unknown encoding 'uft8'
+
+[case testDoubleEncoding3]
+# If the third line were interpreted as a coding cookie, we'd get a
+# different error message.
+# coding: ascii
+á = 1
+[out]
+file:4: error: Unrecognized character
+
+[case testDoubleEncoding4]
+
+
+# coding: ascii
+á = 1
+[out]
+file:4: error: Unrecognized character
 
 [case testLongLiteralInPython3]
 2L
@@ -451,3 +495,39 @@ file:2: error: Unknown encoding 'uft8'
 [out]
 file:1: error: Invalid numeric literal
 file:2: error: Invalid numeric literal
+
+[case testPython2LegacyInequalityInPython3]
+1 <> 2
+[out]
+file:1: error: Parse error before >
+
+[case testLambdaInListComprehensionInPython3]
+([ 0 for x in 1, 2 if 3 ])
+[out]
+file:1: error: Parse error before ,
+
+[case testTupleArgListInPython3]
+def f(x, (y, z)): pass
+[out]
+file: note: In function "f":
+file:1: error: Tuples in argument lists only supported in Python 2 mode
+
+[case testBackquoteInPython3]
+`1 + 2`
+[out]
+file:1: error: Unrecognized character `
+
+[case testSmartQuotes]
+foo = ‘bar’
+[out]
+file:1: error: Unrecognized character
+
+[case testExceptCommaInPython3]
+try:
+    pass
+except KeyError, IndexError:
+    pass
+[out]
+file:3: error: Parse error before ,
+file:3: error: Parse error before :
+file:4: error: Inconsistent indentation

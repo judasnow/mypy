@@ -1,9 +1,15 @@
-"""Utility functions."""
+"""Utility functions with no non-trivial dependencies."""
 
-from typing import TypeVar, List, Any
+import re
+import subprocess
+from typing import TypeVar, List, Any, Tuple, Optional
 
 
 T = TypeVar('T')
+
+ENCODING_RE = re.compile(br'([ \t\v]*#.*(\r\n?|\n))??[ \t\v]*#.*coding[:=][ \t]*([-\w.]+)')
+
+default_python2_interpreter = ['python2', 'python', '/usr/bin/python']
 
 
 def short_type(obj: object) -> str:
@@ -59,3 +65,38 @@ def dump_tagged(nodes: List[Any], tag: str) -> str:
     if tag:
         a[-1] += ')'
     return '\n'.join(a)
+
+
+def find_python_encoding(text: bytes, pyversion: Tuple[int, int]) -> Tuple[str, int]:
+    """PEP-263 for detecting Python file encoding"""
+    result = ENCODING_RE.match(text)
+    if result:
+        line = 2 if result.group(1) else 1
+        encoding = result.group(3).decode('ascii')
+        # Handle some aliases that Python is happy to accept and that are used in the wild.
+        if encoding.startswith(('iso-latin-1-', 'latin-1-')) or encoding == 'iso-latin-1':
+            encoding = 'latin-1'
+        return encoding, line
+    else:
+        default_encoding = 'utf8' if pyversion[0] >= 3 else 'ascii'
+        return default_encoding, -1
+
+
+_python2_interpreter = None  # type: Optional[str]
+
+
+def try_find_python2_interpreter() -> Optional[str]:
+    global _python2_interpreter
+    if _python2_interpreter:
+        return _python2_interpreter
+    for interpreter in default_python2_interpreter:
+        try:
+            process = subprocess.Popen([interpreter, '-V'], stdout=subprocess.PIPE,
+                                       stderr=subprocess.STDOUT)
+            stdout, stderr = process.communicate()
+            if b'Python 2.7' in stdout:
+                _python2_interpreter = interpreter
+                return interpreter
+        except OSError:
+            pass
+    return None

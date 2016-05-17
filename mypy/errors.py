@@ -1,7 +1,9 @@
 import os
 import os.path
+import sys
+import traceback
 
-from typing import Tuple, List, TypeVar, Sequence, Any, Callable, Set
+from typing import Tuple, List, TypeVar, Set
 
 
 T = TypeVar('T')
@@ -26,21 +28,30 @@ class ErrorInfo:
     # The line number related to this error within file.
     line = 0     # -1 if unknown
 
+    # Either 'error' or 'note'.
+    severity = ''
+
     # The error message.
     message = ''
 
     # If True, we should halt build after the file that generated this error.
-    blocker = True
+    blocker = False
+
+    # Only report this particular messages once per program.
+    only_once = False
 
     def __init__(self, import_ctx: List[Tuple[str, int]], file: str, typ: str,
-                 function_or_member: str, line: int, message: str, blocker: bool) -> None:
+                 function_or_member: str, line: int, severity: str, message: str,
+                 blocker: bool, only_once: bool) -> None:
         self.import_ctx = import_ctx
         self.file = file
         self.type = typ
         self.function_or_member = function_or_member
         self.line = line
+        self.severity = severity
         self.message = message
         self.blocker = blocker
+        self.only_once = only_once
 
 
 class Errors:
@@ -71,12 +82,16 @@ class Errors:
     # Ignore errors on these lines.
     ignored_lines = None  # type: Set[int]
 
+    # Collection of reported only_once messages.
+    only_once_messages = None  # type: Set[str]
+
     def __init__(self) -> None:
         self.error_info = []
         self.import_ctx = []
         self.type_name = [None]
         self.function_or_member = [None]
         self.ignored_lines = set()
+        self.only_once_messages = set()
 
     def copy(self) -> 'Errors':
         new = Errors()
@@ -132,17 +147,36 @@ class Errors:
         """Replace the entire import context with a new value."""
         self.import_ctx = ctx[:]
 
-    def report(self, line: int, message: str, blocker: bool = True) -> None:
-        """Report message at the given line using the current error context."""
-        if line in self.ignored_lines:
-            # Annotation requests us to ignore all errors on this line.
-            return
+    def report(self, line: int, message: str, blocker: bool = False,
+               severity: str = 'error', file: str = None, only_once: bool = False) -> None:
+        """Report message at the given line using the current error context.
+
+        Args:
+            line: line number of error
+            message: message to report
+            blocker: if True, don't continue analysis after this error
+            severity: 'error', 'note' or 'warning'
+            file: if non-None, override current file as context
+            only_once: if True, only report this exact message once per build
+        """
         type = self.type_name[-1]
         if len(self.function_or_member) > 2:
             type = None  # Omit type context if nested function
-        info = ErrorInfo(self.import_context(), self.file, type,
-                         self.function_or_member[-1], line, message,
-                         blocker)
+        if file is None:
+            file = self.file
+        info = ErrorInfo(self.import_context(), file, type,
+                         self.function_or_member[-1], line, severity, message,
+                         blocker, only_once)
+        self.add_error_info(info)
+
+    def add_error_info(self, info: ErrorInfo) -> None:
+        if info.line in self.ignored_lines:
+            # Annotation requests us to ignore all errors on this line.
+            return
+        if info.only_once:
+            if info.message in self.only_once_messages:
+                return
+            self.only_once_messages.add(info.message)
         self.error_info.append(info)
 
     def num_messages(self) -> int:
@@ -162,7 +196,7 @@ class Errors:
 
         Render the messages suitable for displaying.
         """
-        raise CompileError(self.messages())
+        raise CompileError(self.messages(), use_stdout=True)
 
     def messages(self) -> List[str]:
         """Return a string list that represents the error messages.
@@ -172,27 +206,21 @@ class Errors:
         a = []  # type: List[str]
         errors = self.render_messages(self.sort_messages(self.error_info))
         errors = self.remove_duplicates(errors)
-        for file, line, message in errors:
+        for file, line, severity, message in errors:
             s = ''
             if file is not None:
                 if line is not None and line >= 0:
-                    s = '{}:{}: error: {}'.format(file, line, message)
+                    srcloc = '{}:{}'.format(file, line)
                 else:
-                    # Currently, `message` has one of the following forms:
-                    #   'In class "X"'
-                    #   'In function "X"'
-                    #   'In member "X" of class "Y"'
-                    #   'At top level'
-                    # all of which are notes, not errors. This will need
-                    # changing if their line numbers get remembered.
-                    s = '{}: note: {}'.format(file, message)
+                    srcloc = file
+                s = '{}: {}: {}'.format(srcloc, severity, message)
             else:
                 s = message
             a.append(s)
         return a
 
     def render_messages(self, errors: List[ErrorInfo]) -> List[Tuple[str, int,
-                                                                     str]]:
+                                                                     str, str]]:
         """Translate the messages into a sequence of tuples.
 
         Each tuple is of form (path, line, message.  The rendered
@@ -200,7 +228,7 @@ class Errors:
         item may be None. If the line item is negative, the line
         number is not defined for the tuple.
         """
-        result = []  # type: List[Tuple[str, int, str]] # (path, line, message)
+        result = []  # type: List[Tuple[str, int, str, str]] # (path, line, severity, message)
 
         prev_import_context = []  # type: List[Tuple[str, int]]
         prev_function_or_member = None  # type: str
@@ -223,7 +251,7 @@ class Errors:
                     # Remove prefix to ignore from path (if present) to
                     # simplify path.
                     path = remove_path_prefix(path, self.ignore_prefix)
-                    result.append((None, -1, fmt.format(path, line)))
+                    result.append((None, -1, 'note', fmt.format(path, line)))
                     i -= 1
 
             # Report context within a source file.
@@ -231,27 +259,27 @@ class Errors:
                     e.type != prev_type):
                 if e.function_or_member is None:
                     if e.type is None:
-                        result.append((e.file, -1, 'At top level:'))
+                        result.append((e.file, -1, 'note', 'At top level:'))
                     else:
-                        result.append((e.file, -1, 'In class "{}":'.format(
+                        result.append((e.file, -1, 'note', 'In class "{}":'.format(
                             e.type)))
                 else:
                     if e.type is None:
-                        result.append((e.file, -1,
+                        result.append((e.file, -1, 'note',
                                        'In function "{}":'.format(
                                            e.function_or_member)))
                     else:
-                        result.append((e.file, -1,
+                        result.append((e.file, -1, 'note',
                                        'In member "{}" of class "{}":'.format(
                                            e.function_or_member, e.type)))
             elif e.type != prev_type:
                 if e.type is None:
-                    result.append((e.file, -1, 'At top level:'))
+                    result.append((e.file, -1, 'note', 'At top level:'))
                 else:
-                    result.append((e.file, -1,
+                    result.append((e.file, -1, 'note',
                                    'In class "{}":'.format(e.type)))
 
-            result.append((e.file, e.line, e.message))
+            result.append((e.file, e.line, e.severity, e.message))
 
             prev_import_context = e.import_ctx
             prev_function_or_member = e.function_or_member
@@ -282,10 +310,10 @@ class Errors:
             result.extend(a)
         return result
 
-    def remove_duplicates(self, errors: List[Tuple[str, int, str]]
-                          ) -> List[Tuple[str, int, str]]:
+    def remove_duplicates(self, errors: List[Tuple[str, int, str, str]]
+                          ) -> List[Tuple[str, int, str, str]]:
         """Remove duplicates from a sorted error list."""
-        res = []  # type: List[Tuple[str, int, str]]
+        res = []  # type: List[Tuple[str, int, str, str]]
         i = 0
         while i < len(errors):
             dup = False
@@ -310,10 +338,12 @@ class CompileError(Exception):
     """
 
     messages = None  # type: List[str]
+    use_stdout = False
 
-    def __init__(self, messages: List[str]) -> None:
-        super().__init__()
+    def __init__(self, messages: List[str], use_stdout: bool = False) -> None:
+        super().__init__('\n'.join(messages))
         self.messages = messages
+        self.use_stdout = use_stdout
 
 
 def remove_path_prefix(path: str, prefix: str) -> str:
@@ -324,3 +354,36 @@ def remove_path_prefix(path: str, prefix: str) -> str:
         return path[len(prefix):]
     else:
         return path
+
+
+# Corresponds to command-line flag --pdb.
+drop_into_pdb = False
+
+
+def set_drop_into_pdb(flag: bool) -> None:
+    global drop_into_pdb
+    drop_into_pdb = flag
+
+
+def report_internal_error(err: Exception, file: str, line: int) -> None:
+    """Display stack trace and file location for an internal error + exit."""
+    if drop_into_pdb:
+        import pdb  # type: ignore
+        pdb.post_mortem(sys.exc_info()[2])
+    tb = traceback.extract_stack()[:-2]
+    tb2 = traceback.extract_tb(sys.exc_info()[2])
+    print('Traceback (most recent call last):')
+    for s in traceback.format_list(tb + tb2):
+        print(s.rstrip('\n'))
+    print('{}: {}'.format(type(err).__name__, err))
+    print('\n*** INTERNAL ERROR ***', file=sys.stderr)
+    if line:
+        prefix = '{}:{}'.format(file, line)
+    else:
+        prefix = file
+    print('\n{}: error: Internal error --'.format(prefix),
+          'please report a bug at https://github.com/python/mypy/issues',
+          file=sys.stderr)
+    print('\nNOTE: you can use "mypy --pdb ..." to drop into the debugger when this happens.',
+          file=sys.stderr)
+    sys.exit(1)

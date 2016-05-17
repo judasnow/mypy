@@ -231,3 +231,21 @@ class G(Generic[T]):
 class A(G[int]):
     def f(self, s: int) -> 'A': pass
 class B(A, int): pass
+
+[case testCannotDetermineTypeInMultipleInheritance]
+from typing import Callable, TypeVar
+T = TypeVar('T')
+class A(B, C):
+    def f(self): pass
+class B:
+    @dec
+    def f(self): pass
+class C:
+    @dec
+    def f(self): pass
+def dec(f: Callable[..., T]) -> Callable[..., T]:
+    return f
+[out]
+main: note: In class "A":
+main:3: error: Cannot determine type of 'f' in base class 'B'
+main:3: error: Cannot determine type of 'f' in base class 'C'

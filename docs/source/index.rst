@@ -12,6 +12,7 @@ Welcome to Mypy documentation!
    introduction
    basics
    builtin_types
+   python2
    type_inference_and_annotations
    kinds_of_types
    class_basics
@@ -24,6 +25,7 @@ Welcome to Mypy documentation!
    supported_python_features
    additional_features
    planned_features
+   command_line
    faq
    revision_history
 

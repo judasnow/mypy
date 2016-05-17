@@ -70,13 +70,19 @@ special type comment after an assignment statement:
 Without the type comment, the type of ``x`` would be just ``int``. We
 use an annotation to give it a more general type ``Union[int, str]``.
 Mypy checks that the type of the initializer is compatible with the
-declared type. This example is not valid, since the initializer is
+declared type. The following example is not valid, since the initializer is
 a floating point number, and this is incompatible with the declared
 type:
 
 .. code-block:: python
 
    x = 1.1  # type: Union[int, str]  # Error!
+
+.. note::
+
+   The best way to think about this is that the type comment sets the
+   type of the variable, not the type of the expression. To force the
+   type of an expression you can use ``cast(<type>, <expression>)``.
 
 Explicit types for collections
 ******************************

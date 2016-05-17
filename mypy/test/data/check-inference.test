@@ -32,14 +32,6 @@ main: note: In function "f":
 main:5: error: Incompatible types in assignment (expression has type "B", variable has type "A")
 main:7: error: Incompatible types in assignment (expression has type "B", variable has type "A")
 
-[case testLvarInitializedToNoneWithoutType]
-import typing
-def f() -> None:
-    a = None # E: Need type annotation for variable
-    a.x()
-[out]
-main: note: In function "f":
-
 [case testLvarInitializedToVoid]
 import typing
 def f() -> None:
@@ -607,9 +599,9 @@ g(a)
 b = f(A(), B())
 g(b)
 c = f(A(), D())
-g(c) # E: Argument 1 to "g" has incompatible type "object"; expected "I"
+g(c) # E: Argument 1 to "g" has incompatible type "J"; expected "I"
 d = f(D(), A())
-g(d) # E: Argument 1 to "g" has incompatible type "object"; expected "I"
+g(d) # E: Argument 1 to "g" has incompatible type "J"; expected "I"
 e = f(D(), C())
 g(e) # E: Argument 1 to "g" has incompatible type "object"; expected "I"
 
@@ -654,9 +646,9 @@ def f(a: T, b: T) -> T: pass
 def g(x: K) -> None: pass
 
 a = f(B(), C())
-g(a) # E: Argument 1 to "g" has incompatible type "object"; expected "K"
+g(a) # E: Argument 1 to "g" has incompatible type "J"; expected "K"
 b = f(A(), C())
-g(b) # E: Argument 1 to "g" has incompatible type "object"; expected "K"
+g(b) # E: Argument 1 to "g" has incompatible type "J"; expected "K"
 c = f(A(), B())
 g(c)
 
@@ -698,6 +690,98 @@ l = lb # E: Incompatible types in assignment (expression has type List[bool], va
 [builtins fixtures/for.py]
 
 
+-- Generic function inference with unions
+-- --------------------------------------
+
+
+[case testUnionInference]
+from typing import TypeVar, Union, List
+T = TypeVar('T')
+U = TypeVar('U')
+def f(x: Union[T, int], y: T) -> T: pass
+f(1, 'a')() # E: "str" not callable
+f('a', 1)() # E: "object" not callable
+f('a', 'a')() # E: "str" not callable
+f(1, 1)() # E: "int" not callable
+
+def g(x: Union[T, List[T]]) -> List[T]: pass
+def h(x: List[str]) -> None: pass
+g('a')() # E: List[str] not callable
+
+# The next line is a case where there are multiple ways to satisfy a constraint
+# involving a Union. Either T = List[str] or T = str would turn out to be valid,
+# but mypy doesn't know how to branch on these two options (and potentially have
+# to backtrack later) and defaults to T = None. The result is an awkward error
+# message. Either a better error message, or simply accepting the call, would be
+# preferable here.
+g(['a']) # E: Argument 1 to "g" has incompatible type List[str]; expected List[None]
+
+h(g(['a']))
+
+def i(x: Union[List[T], List[U]], y: List[T], z: List[U]) -> None: pass
+a = [1]
+b = ['b']
+i(a, a, b)
+i(b, a, b)
+i(a, b, b) # E: Argument 1 to "i" has incompatible type List[int]; expected List[str]
+[builtins fixtures/list.py]
+
+
+[case testUnionInferenceWithTypeVarValues]
+from typing import TypeVar, Union
+AnyStr = TypeVar('AnyStr', bytes, str)
+def f(x: Union[AnyStr, int], *a: AnyStr) -> None: pass
+f('foo')
+f('foo', 'bar')
+f('foo', b'bar') # E: Type argument 1 of "f" has incompatible value "object"
+f(1)
+f(1, 'foo')
+f(1, 'foo', b'bar') # E: Type argument 1 of "f" has incompatible value "object"
+[builtins fixtures/primitives.py]
+
+
+[case testUnionTwoPassInference-skip]
+from typing import TypeVar, Union, List
+T = TypeVar('T')
+U = TypeVar('U')
+def j(x: Union[List[T], List[U]], y: List[T]) -> List[U]: pass
+
+a = [1]
+b = ['b']
+# We could infer: Since List[str] <: List[T], we must have T = str.
+# Then since List[int] <: Union[List[str], List[U]], and List[int] is
+# not a subtype of List[str], we must have U = int.
+# This is not currently implemented.
+j(a, b)
+[builtins fixtures/list.py]
+
+
+[case testUnionContext]
+from typing import TypeVar, Union, List
+T = TypeVar('T')
+def f() -> List[T]: pass
+d1 = f() # type: Union[List[int], str]
+d2 = f() # type: Union[int, str] # E: Incompatible types in assignment (expression has type List[None], variable has type "Union[int, str]")
+def g(x: T) -> List[T]: pass
+d3 = g(1) # type: Union[List[int], List[str]]
+[builtins fixtures/list.py]
+
+
+[case testGenericFunctionSubtypingWithUnions]
+from typing import TypeVar, Union, List
+T = TypeVar('T')
+S = TypeVar('S')
+def k1(x: int, y: List[T]) -> List[Union[T, int]]: pass
+def k2(x: S, y: List[T]) -> List[Union[T, int]]: pass
+a = k2
+a = k2
+a = k1 # E: Incompatible types in assignment (expression has type Callable[[int, List[T]], List[Union[T, int]]], variable has type Callable[[S, List[T]], List[Union[T, int]]])
+b = k1
+b = k1
+b = k2
+[builtins fixtures/list.py]
+
+
 -- Literal expressions
 -- -------------------
 
@@ -731,7 +815,6 @@ s = s_s() # E: Incompatible types in assignment (expression has type Set[str], v
 
 
 [case testInferenceOfFor1]
-
 a, b = None, None # type: (A, B)
 
 for x in [A()]:
@@ -739,7 +822,7 @@ for x in [A()]:
     a = x
 
 for y in []: # E: Need type annotation for variable
-    a = y # E: Cannot determine type of 'y'
+    a = y
 
 class A: pass
 class B: pass
@@ -1012,3 +1095,705 @@ a = x1
 a = x2
 a = x3 # E: Incompatible types in assignment (expression has type List[B], variable has type List[A])
 [builtins fixtures/list.py]
+
+
+-- Inferring type of variable when initialized to an empty collection
+-- ------------------------------------------------------------------
+
+
+[case testInferListInitializedToEmpty]
+a = []
+a.append(1)
+a.append('')  # E: Argument 1 to "append" of "list" has incompatible type "str"; expected "int"
+[builtins fixtures/list.py]
+[out]
+
+[case testInferListInitializedToEmptyUsingUpdate]
+a = []
+a.extend([''])
+a.append(0)  # E: Argument 1 to "append" of "list" has incompatible type "int"; expected "str"
+[builtins fixtures/list.py]
+[out]
+
+[case testInferListInitializedToEmptyAndNotAnnotated]
+a = []  # E: Need type annotation for variable
+[builtins fixtures/list.py]
+[out]
+
+[case testInferListInitializedToEmptyAndReadBeforeAppend]
+a = []  # E: Need type annotation for variable
+if a: pass
+a.xyz
+a.append('')
+[builtins fixtures/list.py]
+[out]
+
+[case testInferListInitializedToEmptyAndIncompleteTypeInAppend]
+a = [] # E: Need type annotation for variable
+a.append([])
+a()
+[builtins fixtures/list.py]
+[out]
+
+[case testInferListInitializedToEmptyAndMultipleAssignment]
+a, b = [], []
+a.append(1)
+b.append('')
+a() # E: List[int] not callable
+b() # E: List[str] not callable
+[builtins fixtures/list.py]
+[out]
+
+[case testInferListInitializedToEmptyInFunction]
+def f() -> None:
+   a = []
+   a.append(1)
+   a.append('')  # E: Argument 1 to "append" of "list" has incompatible type "str"; expected "int"
+[builtins fixtures/list.py]
+[out]
+main: note: In function "f":
+
+[case testInferListInitializedToEmptyAndNotAnnotatedInFunction]
+def f() -> None:
+    a = []  # E: Need type annotation for variable
+
+def g() -> None: pass
+
+a = []
+a.append(1)
+[builtins fixtures/list.py]
+[out]
+main: note: In function "f":
+
+[case testInferListInitializedToEmptyAndReadBeforeAppendInFunction]
+def f() -> None:
+    a = []  # E: Need type annotation for variable
+    if a: pass
+    a.xyz
+    a.append('')
+[builtins fixtures/list.py]
+[out]
+main: note: In function "f":
+
+[case testInferListInitializedToEmptyInClassBody]
+class A:
+   a = []
+   a.append(1)
+   a.append('')  # E: Argument 1 to "append" of "list" has incompatible type "str"; expected "int"
+[builtins fixtures/list.py]
+[out]
+main: note: In class "A":
+
+[case testInferListInitializedToEmptyAndNotAnnotatedInClassBody]
+class A:
+    a = []  # E: Need type annotation for variable
+
+class B:
+    a = []
+    a.append(1)
+[builtins fixtures/list.py]
+[out]
+main: note: In class "A":
+
+[case testInferListInitializedToEmptyInMethod]
+class A:
+    def f(self) -> None:
+        a = []
+        a.append(1)
+        a.append('')  # E: Argument 1 to "append" of "list" has incompatible type "str"; expected "int"
+[builtins fixtures/list.py]
+[out]
+main: note: In member "f" of class "A":
+
+[case testInferListInitializedToEmptyAndNotAnnotatedInMethod]
+class A:
+    def f(self) -> None:
+        a = []  # E: Need type annotation for variable
+[builtins fixtures/list.py]
+[out]
+main: note: In member "f" of class "A":
+
+[case testInferListInitializedToEmptyInMethodViaAttribute]
+class A:
+    def f(self) -> None:
+        # Attributes aren't supported right now.
+        self.a = [] # E: Need type annotation for variable
+        self.a.append(1) # E: Cannot determine type of 'a'
+        self.a.append('') # E: Cannot determine type of 'a'
+[builtins fixtures/list.py]
+[out]
+main: note: In member "f" of class "A":
+
+[case testInferSetInitializedToEmpty]
+a = set()
+a.add(1)
+a.add('')  # E: Argument 1 to "add" of "set" has incompatible type "str"; expected "int"
+[builtins fixtures/set.py]
+[out]
+
+[case testInferSetInitializedToEmptyUsingDiscard]
+a = set()
+a.discard('')
+a.add(0)  # E: Argument 1 to "add" of "set" has incompatible type "int"; expected "str"
+[builtins fixtures/set.py]
+[out]
+
+[case testInferSetInitializedToEmptyUsingUpdate]
+a = set()
+a.update({0})
+a.add('')  # E: Argument 1 to "add" of "set" has incompatible type "str"; expected "int"
+[builtins fixtures/set.py]
+[out]
+
+[case testInferDictInitializedToEmpty]
+a = {}
+a[1] = ''
+a() # E: Dict[int, str] not callable
+[builtins fixtures/dict.py]
+[out]
+
+[case testInferDictInitializedToEmptyUsingUpdate]
+a = {}
+a.update({'': 42})
+a() # E: Dict[str, int] not callable
+[builtins fixtures/dict.py]
+[out]
+
+[case testInferDictInitializedToEmptyUsingUpdateError]
+a = {}  # E: Need type annotation for variable
+a.update([1, 2])
+a()
+[builtins fixtures/dict.py]
+[out]
+
+[case testInferDictInitializedToEmptyAndIncompleteTypeInUpdate]
+a = {} # E: Need type annotation for variable
+a[1] = {}
+b = {} # E: Need type annotation for variable
+b[{}] = 1
+[builtins fixtures/dict.py]
+[out]
+
+[case testInferDictInitializedToEmptyAndUpdatedFromMethod]
+map = {}
+def add():
+    map[1] = 2
+[builtins fixtures/dict.py]
+[out]
+
+[case testSpecialCaseEmptyListInitialization]
+def f(blocks: Any): # E: Name 'Any' is not defined
+    to_process = [] # E: Need type annotation for variable
+    to_process = list(blocks)
+[builtins fixtures/list.py]
+[out]
+main: note: In function "f":
+
+[case testSpecialCaseEmptyListInitialization2]
+def f(blocks: object):
+    to_process = [] # E: Need type annotation for variable
+    to_process = list(blocks) # E: No overload variant of "list" matches argument types [builtins.object]
+[builtins fixtures/list.py]
+[out]
+main: note: In function "f":
+
+
+-- Inferring types of variables first initialized to None (partial types)
+-- ----------------------------------------------------------------------
+
+
+[case testLocalVariablePartiallyInitializedToNone]
+def f() -> None:
+    if object():
+        x = None
+    else:
+        x = 1
+    x() # E: "int" not callable
+[out]
+main: note: In function "f":
+
+[case testLocalVariablePartiallyTwiceInitializedToNone]
+def f() -> None:
+    if object():
+        x = None
+    elif object():
+        x = None
+    else:
+        x = 1
+    x() # E: "int" not callable
+[out]
+main: note: In function "f":
+
+[case testLvarInitializedToNoneWithoutType]
+import typing
+def f() -> None:
+    a = None # E: Need type annotation for variable
+    a.x() # E: None has no attribute "x"
+[out]
+main: note: In function "f":
+
+[case testGvarPartiallyInitializedToNone]
+x = None
+if object():
+    x = 1
+x() # E: "int" not callable
+
+[case testPartiallyInitializedToNoneAndThenToPartialList]
+x = None
+if object():
+    # Promote from partial None to partial list.
+    x = []
+    x.append(1)
+x.append('') # E: Argument 1 to "append" of "list" has incompatible type "str"; expected "int"
+[builtins fixtures/list.py]
+
+[case testPartiallyInitializedToNoneAndThenReadPartialList]
+x = None
+if object():
+    # Promote from partial None to partial list.
+    x = []  # E: Need type annotation for variable
+    x
+[builtins fixtures/list.py]
+
+[case testPartiallyInitializedToNoneAndPartialListAndLeftPartial]
+def f() -> None:
+    x = None
+    if object():
+        # Promote from partial None to partial list.
+        x = []  # E: Need type annotation for variable
+[builtins fixtures/list.py]
+[out]
+main: note: In function "f":
+
+[case testPartiallyInitializedToNoneAndThenToIncompleteType]
+from typing import TypeVar,  Dict
+T = TypeVar('T')
+def f(*x: T) -> Dict[int, T]: pass
+x = None  # E: Need type annotation for variable
+if object():
+    x = f()
+[builtins fixtures/dict.py]
+
+[case testPartiallyInitializedVariableDoesNotEscapeScope1]
+def f() -> None:
+    x = None  # E: Need type annotation for variable
+x = 1
+[out]
+main: note: In function "f":
+
+[case testPartiallyInitializedVariableDoesNotEscapeScope2]
+x = None  # E: Need type annotation for variable
+def f() -> None:
+    x = None
+    x = 1
+x()  # E: None not callable
+
+[case testAttributePartiallyInitializedToNone]
+class A:
+    def f(self) -> None:
+        self.x = None
+        self.x = 1
+        self.x() # E: "int" not callable
+[out]
+main: note: In member "f" of class "A":
+
+[case testAttributePartiallyInitializedToNoneWithMissingAnnotation]
+class A:
+    def f(self) -> None:
+        self.x = None # E: Need type annotation for variable
+
+    def g(self) -> None:
+        self.x = 1
+        self.x()
+[out]
+main: note: In member "f" of class "A":
+
+[case testGlobalInitializedToNoneSetFromFunction]
+a = None
+def f():
+    global a
+    a = 42
+[out]
+
+[case testGlobalInitializedToNoneSetFromMethod]
+a = None
+class C:
+    def m(self):
+        global a
+        a = 42
+[out]
+
+-- More partial type errors
+-- ------------------------
+
+[case testPartialTypeErrorSpecialCase1]
+# This used to crash.
+class A:
+    x = None
+    def f(self) -> None:
+        for a in self.x:
+            pass
+[builtins fixtures/for.py]
+[out]
+main: note: In class "A":
+main:3: error: Need type annotation for variable
+main: note: In member "f" of class "A":
+main:5: error: None has no attribute "__iter__"
+
+[case testPartialTypeErrorSpecialCase2]
+# This used to crash.
+class A:
+    x = []
+    def f(self) -> None:
+        for a in self.x:
+            pass
+[builtins fixtures/for.py]
+[out]
+main: note: In member "f" of class "A":
+main:3: error: Need type annotation for variable
+main: note: In class "A":
+main:3: error: Need type annotation for variable
+
+[case testPartialTypeErrorSpecialCase3]
+class A:
+    x = None
+    def f(self) -> None:
+        for a in A.x:
+            pass
+[builtins fixtures/for.py]
+[out]
+main: note: In class "A":
+main:2: error: Need type annotation for variable
+main: note: In member "f" of class "A":
+main:4: error: None has no attribute "__iter__"
+
+
+-- Multipass
+-- ---------
+
+
+[case testMultipassAndAccessVariableBeforeDefinition]
+def f() -> None:
+    y = x
+    y() # E: "int" not callable
+x = 1
+[out]
+main: note: In function "f":
+
+[case testMultipassAndAccessInstanceVariableBeforeDefinition]
+class A:
+    def f(self) -> None:
+        y = self.x
+        y() # E: "int" not callable
+
+    def g(self) -> None:
+        self.x = 1
+[out]
+main: note: In member "f" of class "A":
+
+[case testMultipassAndTopLevelVariable]
+y = x # E: Cannot determine type of 'x'
+y()
+x = 1
+[out]
+
+[case testMultipassAndDecoratedMethod]
+from typing import Callable, TypeVar
+
+T = TypeVar('T')
+
+class A:
+    def f(self) -> None:
+        self.g() # E: Too few arguments for "g" of "A"
+        self.g(1)
+    @dec
+    def g(self, x: str) -> None: pass
+
+def dec(f: Callable[[A, str], T]) -> Callable[[A, int], T]: pass
+[out]
+main: note: In member "f" of class "A":
+
+[case testMultipassAndDefineAttributeBasedOnNotReadyAttribute]
+class A:
+    def f(self) -> None:
+        self.y = self.x
+
+    def g(self) -> None:
+        self.x = 1
+
+    def h(self) -> None:
+        self.y() # E: "int" not callable
+[out]
+main: note: In member "h" of class "A":
+
+[case testMultipassAndDefineAttributeBasedOnNotReadyAttribute2]
+class A:
+    def f(self) -> None:
+        self.y = self.x
+        self.z = self.y
+        self.z() # E
+        self.y() # E
+
+    def g(self) -> None:
+        self.x = 1
+
+    def h(self) -> None:
+        self.y() # E
+[out]
+main: note: In member "f" of class "A":
+main:5: error: "int" not callable
+main:6: error: "int" not callable
+main: note: In member "h" of class "A":
+main:12: error: "int" not callable
+
+[case testMultipassAndPartialTypes]
+def f() -> None:
+    x = []
+    y
+    x.append(1)
+    x.append('') # E: Argument 1 to "append" of "list" has incompatible type "str"; expected "int"
+    x.append(y) # E: Argument 1 to "append" of "list" has incompatible type "str"; expected "int"
+y = ''
+[builtins fixtures/list.py]
+[out]
+main: note: In function "f":
+
+[case testMultipassAndPartialTypes2]
+s = ''
+n = 0
+def f() -> None:
+    global s, n
+    x = []
+    x.append(y)
+    s = x[0]
+    n = x[0] # E: Incompatible types in assignment (expression has type "str", variable has type "int")
+    x.append(1) # E: Argument 1 to "append" of "list" has incompatible type "int"; expected "str"
+y = ''
+[builtins fixtures/list.py]
+[out]
+main: note: In function "f":
+
+[case testMultipassAndPartialTypes3]
+from typing import Dict
+def g(d: Dict[str, int]) -> None: pass
+def f() -> None:
+    x = {}
+    x[1] = y
+    g(x) # E: Argument 1 to "g" has incompatible type Dict[int, str]; expected Dict[str, int]
+    x[1] = 1 # E: Incompatible types in assignment
+    x[1] = ''
+y = ''
+[builtins fixtures/dict.py]
+[out]
+main: note: In function "f":
+
+[case testMultipassAndPartialTypes4]
+from typing import Dict
+def g(d: Dict[str, int]) -> None: pass
+def f() -> None:
+    x = {}
+    y
+    x[1] = 1
+    g(x) # E: Argument 1 to "g" has incompatible type Dict[int, int]; expected Dict[str, int]
+y = ''
+[builtins fixtures/dict.py]
+[out]
+main: note: In function "f":
+
+[case testMultipassAndCircularDependency]
+class A:
+    def f(self) -> None:
+        self.x = self.y # E: Cannot determine type of 'y'
+
+    def g(self) -> None:
+        self.y = self.x
+[out]
+main: note: In member "f" of class "A":
+
+[case testMultipassAndPartialTypesSpecialCase1]
+def f() -> None:
+    y = o
+    x = []
+    x.append(y)
+    x() # E: List[int] not callable
+o = 1
+[builtins fixtures/list.py]
+[out]
+main: note: In function "f":
+
+[case testMultipassAndPartialTypesSpecialCase2]
+def f() -> None:
+    y = o
+    x = {}
+    x[''] = y
+    x() # E: Dict[str, int] not callable
+o = 1
+[builtins fixtures/dict.py]
+[out]
+main: note: In function "f":
+
+[case testMultipassAndPartialTypesSpecialCase3]
+def f() -> None:
+    x = {} # E: Need type annotation for variable
+    y = o
+    z = {} # E: Need type annotation for variable
+o = 1
+[builtins fixtures/dict.py]
+[out]
+main: note: In function "f":
+
+[case testMultipassAndPartialTypesSpecialCase4]
+def f() -> None:
+    y = o
+    x = None
+    x = y
+    x() # E: "int" not callable
+o = 1
+[out]
+main: note: In function "f":
+
+[case testMultipassAndPartialTypesSpecialCase5]
+def f() -> None:
+    x = None
+    y = o
+    x = y
+    x() # E: "int" not callable
+o = 1
+[out]
+main: note: In function "f":
+
+[case testMultipassAndClassAttribute]
+class S:
+    def foo(self) -> int:
+        return R.X
+
+class R:
+    X = 2
+
+[case testMultipassAndMultipleFiles]
+import m
+def f() -> None:
+    x()
+x = 0
+[file m.py]
+def g() -> None:
+    y()
+y = 0
+[out]
+main:1: note: In module imported here:
+tmp/m.py: note: In function "g":
+tmp/m.py:2: error: "int" not callable
+main: note: In function "f":
+main:3: error: "int" not callable
+
+
+-- Tests for special cases of unification
+-- --------------------------------------
+
+[case testUnificationRedundantUnion]
+from typing import Union
+a = None  # type: Union[int, str]
+b = None  # type: Union[str, tuple]
+def f(): pass
+def g(x: Union[int, str]): pass
+c = a if f() else b
+g(c) # E: Argument 1 to "g" has incompatible type "Union[int, str, tuple]"; expected "Union[int, str]"
+
+[case testUnificationMultipleInheritance]
+class A: pass
+class B:
+    def foo(self): pass
+class C(A, B): pass
+def f(): pass
+a1 = B() if f() else C()
+a1.foo()
+a2 = C() if f() else B()
+a2.foo()
+
+[case testUnificationMultipleInheritanceAmbiguous]
+# Show that join_instances_via_supertype() breaks ties using the first base class.
+class A1: pass
+class B1:
+    def foo1(self): pass
+class C1(A1, B1): pass
+
+class A2: pass
+class B2:
+    def foo2(self): pass
+class C2(A2, B2): pass
+
+class D1(C1, C2): pass
+class D2(C2, C1): pass
+
+def f(): pass
+
+a1 = D1() if f() else D2()
+a1.foo1()
+a2 = D2() if f() else D1()
+a2.foo2()
+
+[case testUnificationEmptyListLeft]
+def f(): pass
+a = [] if f() else [0]
+a() # E: List[int] not callable
+[builtins fixtures/list.py]
+
+[case testUnificationEmptyListRight]
+def f(): pass
+a = [0] if f() else []
+a() # E: List[int] not callable
+[builtins fixtures/list.py]
+
+[case testUnificationEmptyListLeftInContext]
+from typing import List
+def f(): pass
+a = [] if f() else [0] # type: List[int]
+a() # E: List[int] not callable
+[builtins fixtures/list.py]
+
+[case testUnificationEmptyListRightInContext]
+# TODO Find an example that really needs the context
+from typing import List
+def f(): pass
+a = [0] if f() else [] # type: List[int]
+a() # E: List[int] not callable
+[builtins fixtures/list.py]
+
+[case testUnificationEmptySetLeft]
+def f(): pass
+a = set() if f() else {0}
+a() # E: Set[int] not callable
+[builtins fixtures/set.py]
+
+[case testUnificationEmptyDictLeft]
+def f(): pass
+a = {} if f() else {0: 0}
+a() # E: Dict[int, int] not callable
+[builtins fixtures/dict.py]
+
+[case testUnificationEmptyDictRight]
+def f(): pass
+a = {0: 0} if f() else {}
+a() # E: Dict[int, int] not callable
+[builtins fixtures/dict.py]
+
+[case testUnificationDictWithEmptyListLeft]
+def f(): pass
+a = {0: []} if f() else {0: [0]}
+a() # E: Dict[int, List[int]] not callable
+[builtins fixtures/dict.py]
+
+[case testUnificationDictWithEmptyListRight]
+def f(): pass
+a = {0: [0]} if f() else {0: []}
+a() # E: Dict[int, List[int]] not callable
+[builtins fixtures/dict.py]
+
+[case testMisguidedSetItem]
+from typing import Generic, Sequence, TypeVar
+T = TypeVar('T')
+class C(Sequence[T], Generic[T]): pass
+C[0] = 0
+[out]
+main:4: error: Type expected within [...]
+main:4: error: Unsupported target for indexed assignment

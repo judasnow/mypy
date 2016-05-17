@@ -2,14 +2,17 @@ from typing import Dict, Tuple, List, cast
 
 from mypy.types import (
     Type, Instance, CallableType, TypeVisitor, UnboundType, ErrorType, AnyType,
-    Void, NoneTyp, TypeVarType, Overloaded, TupleType, UnionType, ErasedType, TypeList
+    Void, NoneTyp, TypeVarType, Overloaded, TupleType, UnionType, ErasedType, TypeList,
+    PartialType, DeletedType
 )
 
 
-def expand_type(typ: Type, map: Dict[int, Type]) -> Type:
-    """Substitute any type variable references in a type with given values."""
+def expand_type(typ: Type, env: Dict[int, Type]) -> Type:
+    """Substitute any type variable references in a type given by a type
+    environment.
+    """
 
-    return typ.accept(ExpandTypeVisitor(map))
+    return typ.accept(ExpandTypeVisitor(env))
 
 
 def expand_type_by_instance(typ: Type, instance: Instance) -> Type:
@@ -21,15 +24,7 @@ def expand_type_by_instance(typ: Type, instance: Instance) -> Type:
         variables = {}  # type: Dict[int, Type]
         for i in range(len(instance.args)):
             variables[i + 1] = instance.args[i]
-        typ = expand_type(typ, variables)
-        if isinstance(typ, CallableType):
-            bounds = []  # type: List[Tuple[int, Type]]
-            for j in range(len(instance.args)):
-                bounds.append((j + 1, instance.args[j]))
-            typ = update_callable_implicit_bounds(cast(CallableType, typ), bounds)
-        else:
-            pass
-        return typ
+        return expand_type(typ, variables)
 
 
 class ExpandTypeVisitor(TypeVisitor[Type]):
@@ -58,6 +53,9 @@ class ExpandTypeVisitor(TypeVisitor[Type]):
     def visit_none_type(self, t: NoneTyp) -> Type:
         return t
 
+    def visit_deleted_type(self, t: DeletedType) -> Type:
+        return t
+
     def visit_erased_type(self, t: ErasedType) -> Type:
         # Should not get here.
         raise RuntimeError()
@@ -76,16 +74,8 @@ class ExpandTypeVisitor(TypeVisitor[Type]):
             return repl
 
     def visit_callable_type(self, t: CallableType) -> Type:
-        return CallableType(self.expand_types(t.arg_types),
-                            t.arg_kinds,
-                            t.arg_names,
-                            t.ret_type.accept(self),
-                            t.fallback,
-                            t.name,
-                            t.variables,
-                            self.expand_bound_vars(t.bound_vars),
-                            t.line,
-                            t.is_ellipsis_args)
+        return t.copy_modified(arg_types=self.expand_types(t.arg_types),
+                               ret_type=t.ret_type.accept(self))
 
     def visit_overloaded(self, t: Overloaded) -> Type:
         items = []  # type: List[CallableType]
@@ -97,64 +87,15 @@ class ExpandTypeVisitor(TypeVisitor[Type]):
         return TupleType(self.expand_types(t.items), t.fallback, t.line)
 
     def visit_union_type(self, t: UnionType) -> Type:
-        return UnionType(self.expand_types(t.items), t.line)
+        # After substituting for type variables in t.items,
+        # some of the resulting types might be subtypes of others.
+        return UnionType.make_simplified_union(self.expand_types(t.items), t.line)
+
+    def visit_partial_type(self, t: PartialType) -> Type:
+        return t
 
     def expand_types(self, types: List[Type]) -> List[Type]:
         a = []  # type: List[Type]
         for t in types:
             a.append(t.accept(self))
         return a
-
-    def expand_bound_vars(
-            self, types: List[Tuple[int, Type]]) -> List[Tuple[int, Type]]:
-        a = []  # type: List[Tuple[int, Type]]
-        for id, t in types:
-            a.append((id, t.accept(self)))
-        return a
-
-
-def update_callable_implicit_bounds(
-        t: CallableType, arg_types: List[Tuple[int, Type]]) -> CallableType:
-    # FIX what if there are existing bounds?
-    return CallableType(t.arg_types,
-                    t.arg_kinds,
-                    t.arg_names,
-                    t.ret_type,
-                    t.fallback,
-                    t.name,
-                    t.variables,
-                    arg_types, t.line)
-
-
-def expand_caller_var_args(arg_types: List[Type],
-                           fixed_argc: int) -> Tuple[List[Type], Type]:
-    """Expand the caller argument types in a varargs call.
-
-    Fixedargc is the maximum number of fixed arguments that the target
-    function accepts.
-
-    Return (fixed argument types, type of the rest of the arguments). Return
-    (None, None) if the last (vararg) argument had an invalid type. If the
-    vararg argument was not an array (nor dynamic), the last item in the
-    returned tuple is None.
-    """
-
-    if isinstance(arg_types[-1], TupleType):
-        return arg_types[:-1] + (cast(TupleType, arg_types[-1])).items, None
-    else:
-        item_type = None  # type: Type
-        if isinstance(arg_types[-1], AnyType):
-            item_type = AnyType()
-        elif isinstance(arg_types[-1], Instance) and (
-                cast(Instance, arg_types[-1]).type.fullname() ==
-                'builtins.list'):
-            # List.
-            item_type = (cast(Instance, arg_types[-1])).args[0]
-        else:
-            return None, None
-
-        if len(arg_types) > fixed_argc:
-            return arg_types[:-1], item_type
-        else:
-            return (arg_types[:-1] +
-                    [item_type] * (fixed_argc - len(arg_types) + 1), item_type)

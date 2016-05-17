@@ -8,7 +8,8 @@ This module can be run as a script (lex.py FILE).
 
 import re
 
-from mypy.util import short_type
+from mypy.util import short_type, find_python_encoding
+from mypy import defaults
 from typing import List, Callable, Dict, Any, Match, Pattern, Set, Union, Tuple
 
 
@@ -158,7 +159,8 @@ INVALID_DEDENT = 5
 
 
 def lex(string: Union[str, bytes], first_line: int = 1,
-        pyversion: int = 3, is_stub_file: bool = False) -> Tuple[List[Token], Set[int]]:
+        pyversion: Tuple[int, int] = defaults.PYTHON3_VERSION,
+        is_stub_file: bool = False) -> Tuple[List[Token], Set[int]]:
     """Analyze string, and return an array of token objects and the lines to ignore.
 
     The last token is always Eof. The intention is to ignore any
@@ -188,14 +190,14 @@ keywords3 = set(['nonlocal'])
 alpha_operators = set(['in', 'is', 'not', 'and', 'or'])
 
 # String literal prefixes
-str_prefixes = set(['r', 'b', 'br', 'u', 'ur'])
+str_prefixes = set(['r', 'b', 'br', 'rb', 'u', 'ur', 'R', 'B', 'U'])
 
 # List of regular expressions that match non-alphabetical operators
 operators = [re.compile('[-+*/<>.%&|^~]'),
-             re.compile('==|!=|<=|>=|\\*\\*|//|<<|>>')]
+             re.compile('==|!=|<=|>=|\\*\\*|//|<<|>>|<>')]
 
 # List of regular expressions that match punctuator tokens
-punctuators = [re.compile('[=,()@]|(->)'),
+punctuators = [re.compile('[=,()@`]|(->)'),
                re.compile('\\['),
                re.compile(']'),
                re.compile('([-+*/%&|^]|\\*\\*|//|<<|>>)=')]
@@ -234,7 +236,7 @@ def _parse_str_literal(string: str) -> str:
     s = string[len(prefix):]
     if s.startswith("'''") or s.startswith('"""'):
         return s[3:-3]
-    elif 'r' in prefix:
+    elif 'r' in prefix or 'R' in prefix:
         return s[1:-1].replace('\\' + s[0], s[0])
     else:
         return escape_re.sub(lambda m: escape_repl(m, prefix), s[1:-1])
@@ -255,14 +257,14 @@ def escape_repl(m: Match[str], prefix: str) -> str:
         return chr(int(seq[1:], 16))
     elif seq.startswith('u'):
         # Unicode sequence \uNNNN.
-        if 'b' not in prefix:
+        if 'b' not in prefix and 'B' not in prefix:
             return chr(int(seq[1:], 16))
         else:
             return '\\' + seq
     else:
         # Octal sequence.
         ord = int(seq, 8)
-        if 'b' in prefix:
+        if 'b' in prefix and 'B' in prefix:
             # Make sure code is no larger than 255 for bytes literals.
             ord = ord % 256
         return chr(ord)
@@ -282,7 +284,7 @@ class Lexer:
 
     # Table from byte character value to lexer method. E.g. entry at ord('0')
     # contains the method lex_number().
-    map = None  # type: List[Callable[[], None]]
+    map = None  # type: Dict[str, Callable[[], None]]
 
     # Indent levels of currently open blocks, in spaces.
     indents = None  # type: List[int]
@@ -291,13 +293,14 @@ class Lexer:
     # newlines within parentheses/brackets.
     open_brackets = None  # type: List[str]
 
-    pyversion = 3
+    pyversion = defaults.PYTHON3_VERSION
 
     # Ignore errors on these lines (defined using '# type: ignore').
     ignored_lines = None  # type: Set[int]
 
-    def __init__(self, pyversion: int = 3, is_stub_file: bool = False) -> None:
-        self.map = [self.unknown_character] * 256
+    def __init__(self, pyversion: Tuple[int, int] = defaults.PYTHON3_VERSION,
+                 is_stub_file: bool = False) -> None:
+        self.map = {}
         self.tok = []
         self.indents = [0]
         self.open_brackets = []
@@ -305,6 +308,7 @@ class Lexer:
         self.is_stub_file = is_stub_file
         self.ignored_lines = set()
         # Fill in the map from valid character codes to relevant lexer methods.
+        extra_misc = '' if pyversion[0] >= 3 else '`'
         for seq, method in [('ABCDEFGHIJKLMNOPQRSTUVWXYZ', self.lex_name),
                             ('abcdefghijklmnopqrstuvwxyz_', self.lex_name),
                             ('0123456789', self.lex_number),
@@ -319,15 +323,15 @@ class Lexer:
                             ('\\', self.lex_backslash),
                             ('([{', self.lex_open_bracket),
                             (')]}', self.lex_close_bracket),
-                            ('-+*/<>%&|^~=!,@', self.lex_misc)]:
+                            ('-+*/<>%&|^~=!,@' + extra_misc, self.lex_misc)]:
             for c in seq:
-                self.map[ord(c)] = method
-        if pyversion == 2:
+                self.map[c] = method
+        if pyversion[0] == 2:
             self.keywords = keywords_common | keywords2
             # Decimal/hex/octal/binary literal or integer complex literal
             self.number_exp1 = re.compile('(0[xXoObB][0-9a-fA-F]+|[0-9]+)[lL]?')
 
-        if pyversion == 3:
+        if pyversion[0] == 3:
             self.keywords = keywords_common | keywords3
             self.number_exp1 = re.compile('0[xXoObB][0-9a-fA-F]+|[0-9]+')
 
@@ -341,7 +345,7 @@ class Lexer:
                 self.enc = 'utf8'
                 bom = True
             else:
-                self.enc, enc_line = self.find_encoding(text)
+                self.enc, enc_line = find_python_encoding(text, self.pyversion)
                 bom = False
             try:
                 decoded_text = text.decode(self.enc)
@@ -360,17 +364,18 @@ class Lexer:
         # an error.
         self.lex_indent()
 
-        # Make a local copy of map as a simple optimization.
+        # Use some local variables as a simple optimization.
         map = self.map
+        default = self.unknown_character
 
         # Lex the file. Repeatedly call the lexer method for the current char.
         while self.i < len(text):
             # Get the character code of the next character to lex.
-            c = ord(text[self.i])
+            c = text[self.i]
             # Dispatch to the relevant lexer method. This will consume some
             # characters in the text, add a token to self.tok and increment
             # self.i.
-            map[c]()
+            map.get(c, default)()
 
         # Append a break if there is no statement/block terminator at the end
         # of input.
@@ -378,7 +383,7 @@ class Lexer:
                                   not isinstance(self.tok[-1], Dedent)):
             self.add_token(Break(''))
 
-        # Attack any dangling comments/whitespace to a final Break token.
+        # Attach any dangling comments/whitespace to a final Break token.
         if self.tok and isinstance(self.tok[-1], Break):
             self.tok[-1].string += self.pre_whitespace
             self.pre_whitespace = ''
@@ -387,15 +392,6 @@ class Lexer:
         self.lex_indent()
 
         self.add_token(Eof(''))
-
-    def find_encoding(self, text: bytes) -> Tuple[str, int]:
-        result = re.match(br'(\s*#.*(\r\n?|\n))?\s*#.*coding[:=]\s*([-\w.]+)', text)
-        if result:
-            line = 2 if result.group(1) else 1
-            return result.group(3).decode('ascii'), line
-        else:
-            default_encoding = 'utf8' if self.pyversion >= 3 else 'ascii'
-            return default_encoding, -1
 
     def report_unicode_decode_error(self, exc: UnicodeDecodeError, text: bytes) -> None:
         lines = text.splitlines()
@@ -484,7 +480,7 @@ class Lexer:
             self.add_token(LexError(' ' * maxlen, NUMERIC_LITERAL_ERROR))
         elif len(s1) == maxlen:
             # Integer literal.
-            if self.pyversion >= 3 and self.octal_int.match(s1):
+            if self.pyversion[0] >= 3 and self.octal_int.match(s1):
                 # Python 2 style octal literal such as 0377 not supported in Python 3.
                 self.add_token(LexError(s1, NUMERIC_LITERAL_ERROR))
             else:
@@ -512,7 +508,7 @@ class Lexer:
             self.add_token(Keyword(s))
         elif s in alpha_operators:
             self.add_token(Op(s))
-        elif s in str_prefixes and self.match(re.compile('[a-z]+[\'"]')) != '':
+        elif s in str_prefixes and self.match(re.compile('[a-zA-Z]+[\'"]')) != '':
             self.lex_prefixed_str(s)
         else:
             self.add_token(Name(s))
@@ -521,13 +517,13 @@ class Lexer:
 
     # Initial part of a single-quoted literal, e.g. b'foo' or b'foo\\\n
     str_exp_single = re.compile(
-        r"[a-z]*'([^'\\\r\n]|\\[^\r\n])*('|\\(\n|\r\n?))")
+        r"[a-zA-Z]*'([^'\\\r\n]|\\[^\r\n])*('|\\(\n|\r\n?))")
     # Non-initial part of a multiline single-quoted literal, e.g. foo'
     str_exp_single_multi = re.compile(
         r"([^'\\\r\n]|\\[^\r\n])*('|\\(\n|\r\n?))")
     # Initial part of a single-quoted raw literal, e.g. r'foo' or r'foo\\\n
     str_exp_raw_single = re.compile(
-        r"[a-z]*'([^'\r\n\\]|\\'|\\[^\n\r])*('|\\(\n|\r\n?))")
+        r"[a-zA-Z]*'([^'\r\n\\]|\\'|\\[^\n\r])*('|\\(\n|\r\n?))")
     # Non-initial part of a raw multiline single-quoted literal, e.g. foo'
     str_exp_raw_single_multi = re.compile(
         r"([^'\r\n]|'')*('|\\(\n|\r\n?))")
@@ -563,11 +559,11 @@ class Lexer:
 
     def lex_prefixed_str(self, prefix: str) -> None:
         """Analyse a string literal with a prefix, such as r'...'."""
-        s = self.match(re.compile('[a-z]+[\'"]'))
+        s = self.match(re.compile('[a-zA-Z]+[\'"]'))
         if s.endswith("'"):
             re1 = self.str_exp_single
             re2 = self.str_exp_single_multi
-            if 'r' in prefix:
+            if 'r' in prefix or 'R' in prefix:
                 re1 = self.str_exp_raw_single
                 re2 = self.str_exp_raw_single_multi
             self.lex_str(re1, re2, self.str_exp_single3,
@@ -575,7 +571,7 @@ class Lexer:
         else:
             re1 = self.str_exp_double
             re2 = self.str_exp_double_multi
-            if 'r' in prefix:
+            if 'r' in prefix or 'R' in prefix:
                 re1 = self.str_exp_raw_double
                 re2 = self.str_exp_raw_double_multi
             self.lex_str(re1, re2, self.str_exp_double3,
@@ -601,9 +597,9 @@ class Lexer:
                 if s.endswith('\n') or s.endswith('\r'):
                     self.lex_multiline_string_literal(re2, s)
                 else:
-                    if 'b' in prefix:
+                    if 'b' in prefix or 'B' in prefix:
                         self.add_token(BytesLit(s))
-                    elif 'u' in prefix:
+                    elif 'u' in prefix or 'U' in prefix:
                         self.add_token(UnicodeLit(s))
                     else:
                         self.add_token(StrLit(s))
@@ -630,9 +626,9 @@ class Lexer:
             self.line += 1
             self.i += len(s)
         lit = None  # type: Token
-        if 'b' in prefix:
+        if 'b' in prefix or 'B' in prefix:
             lit = BytesLit(ss + m.group(0))
-        elif 'u' in prefix:
+        elif 'u' in prefix or 'U' in prefix:
             lit = UnicodeLit(ss + m.group(0))
         else:
             lit = StrLit(ss + m.group(0))
@@ -692,15 +688,16 @@ class Lexer:
     def lex_indent(self) -> None:
         """Analyze whitespace chars at the beginning of a line (indents)."""
         s = self.match(self.indent_exp)
-        if s != '' and s[-1] in self.comment_or_newline:
+        while True:
+            s = self.match(self.indent_exp)
+            if s == '' or s[-1] not in self.comment_or_newline:
+                break
             # Empty line (whitespace only or comment only).
             self.add_pre_whitespace(s[:-1])
             if s[-1] == '#':
                 self.lex_comment()
             else:
                 self.lex_break()
-            self.lex_indent()
-            return
         indent = self.calc_indent(s)
         if indent == self.indents[-1]:
             # No change in indent: just whitespace.
@@ -794,6 +791,12 @@ class Lexer:
             # '='.
             self.add_token(LexError(self.s[self.i], INVALID_CHARACTER))
         else:
+            if s == '<>':
+                if self.pyversion[0] == 2:
+                    s = '!='
+                else:
+                    self.add_token(Op('<'))
+                    s = '>'
             self.add_token(t(s))
 
     def unknown_character(self) -> None:
@@ -878,7 +881,7 @@ if __name__ == '__main__':
     # Lexically analyze a file and dump the tokens to stdout.
     import sys
     if len(sys.argv) != 2:
-        print('Usage: lex.py FILE')
+        print('Usage: lex.py FILE', file=sys.stderr)
         sys.exit(2)
     fnam = sys.argv[1]
     s = open(fnam, 'rb').read()

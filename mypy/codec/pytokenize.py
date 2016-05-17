@@ -87,12 +87,15 @@ __author__ = 'Ka-Ping Yee <ping@lfw.org>'
 __credits__ = ('GvR, ESR, Tim Peters, Thomas Wouters, Fred Drake, '
                'Skip Montanaro, Raymond Hettinger')
 
+if False:
+    from typing import List, Dict
+
 import string
 import re
 from token import *
 
 import token
-x = None
+x = None # type: str
 __all__ = [x for x in dir(token) if not x.startswith("_")]
 __all__ += ["COMMENT", "tokenize", "generate_tokens", "NL", "untokenize"]
 del x
@@ -187,7 +190,7 @@ endprogs = {"'": re.compile(Single), '"': re.compile(Double),
             'r': None, 'R': None, 'u': None, 'U': None,
             'b': None, 'B': None}
 
-triple_quoted = {}
+triple_quoted = {} # type: Dict[str, str]
 for t in ("'''", '"""',
           "r'''", 'r"""', "R'''", 'R"""',
           "u'''", 'u"""', "U'''", 'U"""',
@@ -197,7 +200,7 @@ for t in ("'''", '"""',
           "br'''", 'br"""', "Br'''", 'Br"""',
           "bR'''", 'bR"""', "BR'''", 'BR"""'):
     triple_quoted[t] = t
-single_quoted = {}
+single_quoted = {} # type: Dict[str, str]
 for t in ("'", '"',
           "r'", 'r"', "R'", 'R"',
           "u'", 'u"', "U'", 'U"',
@@ -333,6 +336,10 @@ def generate_tokens(readline):
     contline = None
     indents = [0]
 
+    if 0:
+        # type hints for mypy
+        strstart = (0, 0)
+        endprog = re.compile('')
     while 1:                                   # loop over lines in stream
         try:
             line = readline()

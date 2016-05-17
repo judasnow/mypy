@@ -6,7 +6,6 @@
 import typing
 def f() -> 'A':
     return A()
-    return B()
 def g() -> 'B':
     return A()
 class A:
@@ -14,10 +13,8 @@ class A:
 class B:
     pass
 [out]
-main: note: In function "f":
-main:4: error: Incompatible return value type: expected __main__.A, got __main__.B
 main: note: In function "g":
-main:6: error: Incompatible return value type: expected __main__.B, got __main__.A
+main:5: error: Incompatible return value type: expected __main__.B, got __main__.A
 
 [case testReturnSubtype]
 import typing
@@ -54,6 +51,42 @@ def g() -> None:
 [out]
 main: note: In function "g":
 
+[case testReturnInGenerator]
+from typing import Generator
+def f() -> Generator[int, None, str]:
+    yield 1
+    return "foo"
+[out]
+
+[case testEmptyReturnInGenerator]
+from typing import Generator
+def f() -> Generator[int, None, str]:
+    yield 1
+    return  # E: Return value expected
+[out]
+main: note: In function "f":
+
+[case testEmptyReturnInNoneTypedGenerator]
+from typing import Generator
+def f() -> Generator[int, None, None]:
+    yield 1
+    return
+[out]
+
+[case testNonEmptyReturnInNoneTypedGenerator]
+from typing import Generator
+def f() -> Generator[int, None, None]:
+    yield 1
+    return 42  # E: No return value expected
+[out]
+main: note: In function "f":
+
+[case testReturnInIterator]
+from typing import Iterator
+def f() -> Iterator[int]:
+    yield 1
+    return "foo"
+[out]
 
 -- If statement
 -- ------------
@@ -463,6 +496,18 @@ main: note: In function "f":
 main:5: error: Incompatible types in assignment (expression has type "object", variable has type "BaseException")
 main:8: error: Incompatible types in assignment (expression has type "BaseException", variable has type "Err")
 
+[case testTryExceptFlow]
+def f() -> None:
+  x = 1
+  try:
+    pass
+  except:
+    raise
+  x + 'a' # E: Unsupported left operand type for + ("int")
+[builtins fixtures/exception.py]
+[out]
+main: note: In function "f":
+
 [case testTryWithElse]
 import typing
 try: pass
@@ -470,6 +515,24 @@ except BaseException: pass
 else:
   object(None) # E: Too many arguments for "object"
 [builtins fixtures/exception.py]
+
+[case testRedefinedFunctionInTryWithElse]
+def f() -> None: pass
+try:
+    pass
+except BaseException:
+    f2 = f
+else:
+    def f2() -> str: pass
+try:
+    pass
+except BaseException:
+    f3 = f
+else:
+    def f3() -> None: pass
+[builtins fixtures/exception.py]
+[out]
+main:7: error: Incompatible redefinition (redefinition with type Callable[[], str], original type Callable[[], None])
 
 [case testExceptWithoutType]
 import typing
@@ -521,7 +584,21 @@ except E1 as e: pass
 try: pass
 except E1 as e: pass
 try: pass
-except E2 as e: pass # E: Incompatible types in assignment (expression has type "E2", variable has type "E1")
+except E2 as e: pass
+e + 1 # E: Trying to read deleted variable 'e'
+e = E1() # E: Assignment to variable 'e' outside except: block
+[builtins fixtures/exception.py]
+
+[case testReuseDefinedTryExceptionVariable]
+import typing
+class E1(BaseException): pass
+class E2(BaseException): pass
+e = 1
+e = 1
+try: pass
+except E1 as e: pass
+e = 1 # E: Assignment to variable 'e' outside except: block
+e = E1() # E: Assignment to variable 'e' outside except: block
 [builtins fixtures/exception.py]
 
 [case testArbitraryExpressionAsExceptionType]
@@ -555,13 +632,20 @@ except E as e:
     e = BaseException() # E: Incompatible types in assignment (expression has type "BaseException", variable has type "E")
 [builtins fixtures/exception.py]
 
+[case testExceptionWithAnyBaseClass]
+from typing import Any
+E = None  # type: Any
+class EE(E): pass
+raise EE()
+raise EE
+[builtins fixtures/exception.py]
+
 
 -- Del statement
 -- -------------
 
 
 [case testDelStmtWithIndex]
-
 a, b = None, None # type: (A, B)
 del b[a]
 del b[b] # E: Argument 1 to "__delitem__" of "B" has incompatible type "B"; expected "A"
@@ -572,7 +656,6 @@ class B:
 class A: pass
 
 [case testDelStmtWithAttribute]
-import typing
 class A:
     def f(self): pass
     x = 0
@@ -581,6 +664,37 @@ del a.f
 del a.x
 del a.z # E: "A" has no attribute "z"
 
+[case testDelStatementWithTuple]
+class A:
+    x = 0
+a = A()
+del a.x, a.y # E: "A" has no attribute "y"
+
+
+[case testDelStatementWithAssignmentSimple]
+a = 1
+a + 1
+del a
+a + 1 # E: Trying to read deleted variable 'a'
+[builtins fixtures/ops.py]
+
+[case testDelStatementWithAssignmentTuple]
+a = 1
+b = 1
+del (a, b)
+b + 1 # E: Trying to read deleted variable 'b'
+[builtins fixtures/ops.py]
+
+[case testDelStatementWithAssignmentClass]
+class C:
+    a = 1
+
+c = C()
+c.a = 1
+c.a + 1
+del c.a
+c.a + 1
+[builtins fixtures/ops.py]
 
 -- Yield statement
 -- ---------------
@@ -595,6 +709,26 @@ def f() -> Iterator[int]:
 [out]
 main: note: In function "f":
 
+[case testYieldInFunctionReturningGenerator]
+from typing import Generator
+def f() -> Generator[int, None, None]:
+    yield 1
+[builtins fixtures/for.py]
+[out]
+
+[case testYieldInFunctionReturningIterable]
+from typing import Iterable
+def f() -> Iterable[int]:
+    yield 1
+[builtins fixtures/for.py]
+[out]
+
+[case testYieldInFunctionReturningObject]
+def f() -> object:
+    yield 1
+[builtins fixtures/for.py]
+[out]
+
 [case testYieldInFunctionReturningAny]
 from typing import Any
 def f() -> Any:
@@ -603,8 +737,8 @@ def f() -> Any:
 
 [case testYieldInFunctionReturningFunction]
 from typing import Callable
-def f() -> Callable[[], None]:
-    yield object() # E: Iterator function return type expected for "yield"
+def f() -> Callable[[], None]: # E: The return type of a generator function should be "Generator" or one of its supertypes
+    yield object()
 [out]
 main: note: In function "f":
 
@@ -615,8 +749,8 @@ def f():
 
 [case testWithInvalidInstanceReturnType]
 import typing
-def f() -> int:
-    yield 1 # E: Iterator function return type expected for "yield"
+def f() -> int: # E: The return type of a generator function should be "Generator" or one of its supertypes
+    yield 1
 [builtins fixtures/for.py]
 [out]
 main: note: In function "f":
@@ -642,6 +776,22 @@ from typing import Iterator
 def f() -> Iterator[None]:
     yield
 [builtins fixtures/for.py]
+
+[case testYieldWithNoValueWhenValueRequired]
+from typing import Iterator
+def f() -> Iterator[int]:
+    yield  # E: Yield value expected
+[builtins fixtures/for.py]
+[out]
+main: note: In function "f":
+
+[case testYieldWithExplicitNone]
+from typing import Iterator
+def f() -> Iterator[None]:
+    yield None  # E: Incompatible types in yield (actual type None, expected type None)
+[builtins fixtures/for.py]
+[out]
+main: note: In function "f":
 
 
 -- Yield from statement
@@ -674,8 +824,8 @@ def f() -> Any:
 from typing import Iterator, Callable
 def g() -> Iterator[int]:
     yield 42
-def f() -> Callable[[], None]:
-    yield from g()  # E: Iterable function return type expected for "yield from"
+def f() -> Callable[[], None]:  # E: The return type of a generator function should be "Generator" or one of its supertypes
+    yield from g()
 [out]
 main: note: In function "f":
 
@@ -683,8 +833,8 @@ main: note: In function "f":
 from typing import Iterator
 def g() -> Iterator[int]:
     yield 42
-def f() -> int:
-    yield from g()  # E: Iterable function return type expected for "yield from"
+def f() -> int:  # E: The return type of a generator function should be "Generator" or one of its supertypes
+    yield from g()
 [out]
 main: note: In function "f":
 
@@ -725,6 +875,12 @@ def g() -> Iterator[str]:
     yield "g2 more spam"
 [out]
 
+[case testYieldFromAny]
+from typing import Iterator
+def f(a):
+    b = yield from a
+    return b
+[out]
 
 -- With statement
 -- --------------

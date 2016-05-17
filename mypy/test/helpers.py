@@ -2,10 +2,12 @@ import sys
 import re
 import os
 
-from typing import List, Dict
+from typing import List, Dict, Tuple
 
+from mypy import defaults
 from mypy.myunit import AssertionFailure
 from mypy.test import config
+from mypy.test.data import DataDrivenTestCase
 
 
 # AssertStringArraysEqual displays special line alignment helper messages if
@@ -36,7 +38,7 @@ def assert_string_arrays_equal(expected: List[str], actual: List[str],
         # Keep track of the first different line.
         first_diff = -1
 
-        # Display only this many first characers of identical lines.
+        # Display only this many first characters of identical lines.
         width = 75
 
         for i in range(num_skip_start, len(expected) - num_skip_end):
@@ -84,9 +86,10 @@ def assert_string_arrays_equal(expected: List[str], actual: List[str],
         raise AssertionFailure(msg)
 
 
-def update_testcase_output(testcase, output, append):
-    newfile = testcase.file + append
-    data_lines = open(testcase.file).read().splitlines()
+def update_testcase_output(testcase: DataDrivenTestCase, output: List[str], append: str) -> None:
+    testcase_path = os.path.join(testcase.old_cwd, testcase.file)
+    newfile = testcase_path + append
+    data_lines = open(testcase_path).read().splitlines()
     test = '\n'.join(data_lines[testcase.line:testcase.lastline])
 
     mapping = {}  # type: Dict[str, List[str]]
@@ -180,7 +183,7 @@ def assert_string_arrays_equal_wildcards(expected: List[str],
     assert_string_arrays_equal(expected, actual, msg)
 
 
-def clean_up(a):
+def clean_up(a: List[str]) -> List[str]:
     """Remove common directory prefix from all strings in a.
 
     This uses a naive string replace; it seems to work well enough. Also
@@ -260,15 +263,24 @@ def num_skipped_suffix_lines(a1: List[str], a2: List[str]) -> int:
     return max(0, num_eq - 4)
 
 
-def testfile_pyversion(path: str) -> int:
+def testfile_pyversion(path: str) -> Tuple[int, int]:
     if path.endswith('python2.test'):
-        return 2
+        return defaults.PYTHON2_VERSION
     else:
-        return 3
+        return defaults.PYTHON3_VERSION
 
 
-def testcase_pyversion(path: str, testcase_name: str) -> int:
+def testcase_pyversion(path: str, testcase_name: str) -> Tuple[int, int]:
     if testcase_name.endswith('python2'):
-        return 2
+        return defaults.PYTHON2_VERSION
     else:
         return testfile_pyversion(path)
+
+
+def normalize_error_messages(messages: List[str]) -> List[str]:
+    """Translate an array of error messages to use / as path separator."""
+
+    a = []
+    for m in messages:
+        a.append(m.replace(os.sep, '/'))
+    return a

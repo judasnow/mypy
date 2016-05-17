@@ -30,7 +30,7 @@ b()
 [case testIgnoreImportAllError]
 from xyz_m import * # type: ignore
 x   # E: Name 'x' is not defined
-1()
+1() # E: "int" not callable
 
 [case testIgnoreAssignmentTypeError]
 x = 1
@@ -76,10 +76,96 @@ from m2 import * # type: ignore
 # We should still import things that don't conflict.
 y() # E: "str" not callable
 z() # E: "int" not callable
-x() # E: "str" not callable
+x() # E: "int" not callable
 [file m1.py]
 x = 1
 y = ''
 [file m2.py]
 x = ''
 z = 1
+
+[case testIgnoredModuleDefinesBaseClass1]
+from m import B # type: ignore
+
+class C(B):
+    def f(self) -> None:
+        self.f(1) # E: Too many arguments for "f" of "C"
+        self.g(1)
+[out]
+main: note: In member "f" of class "C":
+
+[case testIgnoredModuleDefinesBaseClass2]
+import m # type: ignore
+
+class C(m.B):
+    def f(self) -> None: ...
+
+c = C()
+c.f(1) # E: Too many arguments for "f" of "C"
+c.g(1)
+c.x = 1
+[out]
+
+[case testIgnoredModuleDefinesBaseClassAndClassAttribute]
+import m # type: ignore
+
+class C(m.B):
+    @staticmethod
+    def f() -> None: pass
+
+C.f(1) # E: Too many arguments for "f" of "C"
+C.g(1)
+C.x = 1
+[builtins fixtures/staticmethod.py]
+[out]
+
+[case testIgnoredModuleDefinesBaseClassWithInheritance1]
+from m import B # type: ignore
+
+class C: pass
+class D(C, B):
+    def f(self) -> None:
+        self.f(1) # E: Too many arguments for "f" of "D"
+        self.g(1)
+[out]
+main: note: In member "f" of class "D":
+
+[case testIgnoredModuleDefinesBaseClassWithInheritance2]
+from m import B # type: ignore
+
+class C(B): pass
+class D(C):
+    def f(self) -> None:
+        self.f(1) # E: Too many arguments for "f" of "D"
+        self.g(1)
+[out]
+main: note: In member "f" of class "D":
+
+[case testIgnoreWithFollowingIndentedComment]
+if 1:  # type: ignore
+    # blah
+    pass
+[out]
+
+[case testIgnoreTooManyTypeArguments]
+from typing import TypeVar, Generic
+T = TypeVar('T')
+U = TypeVar('U')
+
+class Base(Generic[T, U]):
+  pass
+
+class PartialBase(Base[T, int], Generic[T]):
+  pass
+
+class Child(PartialBase[str, int]):  # type: ignore
+  pass
+
+
+def foo(x: Base[str, int]) -> None: pass
+foo(Child())
+
+def bar(x: Base[str, str]) -> None: pass
+bar(Child())
+[out]
+main:19: error: Argument 1 to "bar" has incompatible type "Child"; expected Base[str, str]

@@ -1,17 +1,20 @@
 """Semantic analysis of types"""
 
-from typing import Callable, cast, List, Tuple, Dict, Any, Union
+from typing import Callable, cast, List, Tuple
 
 from mypy.types import (
     Type, UnboundType, TypeVarType, TupleType, UnionType, Instance, AnyType, CallableType,
-    Void, NoneTyp, TypeList, TypeVarDef, TypeVisitor, StarType, EllipsisType
+    Void, NoneTyp, DeletedType, TypeList, TypeVarDef, TypeVisitor, StarType, PartialType,
+    EllipsisType
 )
 from mypy.nodes import (
-    GDEF, TYPE_ALIAS, TypeInfo, Context, SymbolTableNode, BOUND_TVAR, TypeVarExpr, Var, Node,
-    IndexExpr, NameExpr, TupleExpr, RefExpr
+    BOUND_TVAR, TYPE_ALIAS, UNBOUND_IMPORTED,
+    TypeInfo, Context, SymbolTableNode, TypeVarExpr, Var, Node,
+    IndexExpr, RefExpr
 )
 from mypy.sametypes import is_same_type
 from mypy.exprtotype import expr_to_unanalyzed_type, TypeTranslationError
+from mypy.subtypes import satisfies_upper_bound
 from mypy import nodes
 
 
@@ -72,14 +75,20 @@ class TypeAnalyser(TypeVisitor[Type]):
     def visit_unbound_type(self, t: UnboundType) -> Type:
         sym = self.lookup(t.name, t)
         if sym is not None:
+            if sym.node is None:
+                # UNBOUND_IMPORTED can happen if an unknown name was imported.
+                if sym.kind != UNBOUND_IMPORTED:
+                    self.fail('Internal error (node is None, kind={})'.format(sym.kind), t)
+                return AnyType()
             fullname = sym.node.fullname()
             if sym.kind == BOUND_TVAR:
                 if len(t.args) > 0:
                     self.fail('Type variable "{}" used with arguments'.format(
                         t.name), t)
-                values = cast(TypeVarExpr, sym.node).values
-                return TypeVarType(t.name, sym.tvar_id, values,
-                                   self.builtin_type('builtins.object'),
+                tvar_expr = cast(TypeVarExpr, sym.node)
+                return TypeVarType(t.name, sym.tvar_id, tvar_expr.values,
+                                   tvar_expr.upper_bound,
+                                   tvar_expr.variance,
                                    t.line)
             elif fullname == 'builtins.None':
                 return Void()
@@ -112,6 +121,12 @@ class TypeAnalyser(TypeVisitor[Type]):
                 name = sym.fullname
                 if name is None:
                     name = sym.node.name()
+                if isinstance(sym.node, Var) and isinstance(sym.node.type, AnyType):
+                    # Something with an Any type -- make it an alias for Any in a type
+                    # context. This is slightly problematic as it allows using the type 'Any'
+                    # as a base class -- however, this will fail soon at runtime so the problem
+                    # is pretty minor.
+                    return AnyType()
                 self.fail('Invalid type "{}"'.format(name), t)
                 return t
             info = cast(TypeInfo, sym.node)
@@ -138,7 +153,7 @@ class TypeAnalyser(TypeVisitor[Type]):
                                      fallback=instance,
                                      line=t.line)
         else:
-            return t
+            return AnyType()
 
     def visit_any(self, t: AnyType) -> Type:
         return t
@@ -149,8 +164,12 @@ class TypeAnalyser(TypeVisitor[Type]):
     def visit_none_type(self, t: NoneTyp) -> Type:
         return t
 
+    def visit_deleted_type(self, t: DeletedType) -> Type:
+        return t
+
     def visit_type_list(self, t: TypeList) -> Type:
         self.fail('Invalid type', t)
+        return AnyType()
 
     def visit_instance(self, t: Instance) -> Type:
         return t
@@ -159,16 +178,10 @@ class TypeAnalyser(TypeVisitor[Type]):
         raise RuntimeError('TypeVarType is already analyzed')
 
     def visit_callable_type(self, t: CallableType) -> Type:
-        res = CallableType(self.anal_array(t.arg_types),
-                       t.arg_kinds,
-                       t.arg_names,
-                       t.ret_type.accept(self),
-                       self.builtin_type('builtins.function'),
-                       t.name,
-                       self.anal_var_defs(t.variables),
-                       self.anal_bound_vars(t.bound_vars), t.line)
-
-        return res
+        return t.copy_modified(arg_types=self.anal_array(t.arg_types),
+                               ret_type=t.ret_type.accept(self),
+                               fallback=t.fallback or self.builtin_type('builtins.function'),
+                               variables=self.anal_var_defs(t.variables))
 
     def visit_tuple_type(self, t: TupleType) -> Type:
         if t.implicit:
@@ -187,47 +200,52 @@ class TypeAnalyser(TypeVisitor[Type]):
     def visit_union_type(self, t: UnionType) -> Type:
         return UnionType(self.anal_array(t.items), t.line)
 
+    def visit_partial_type(self, t: PartialType) -> Type:
+        assert False, "Internal error: Unexpected partial type"
+
     def visit_ellipsis_type(self, t: EllipsisType) -> Type:
         self.fail("Unexpected '...'", t)
         return AnyType()
 
     def analyze_callable_type(self, t: UnboundType) -> Type:
-        if len(t.args) != 2:
-            self.fail('Invalid function type', t)
-            return AnyType()
-        ret_type = t.args[1].accept(self)
         fallback = self.builtin_type('builtins.function')
-        if isinstance(t.args[0], TypeList):
-            # Callable[[ARG, ...], RET] (ordinary callable type)
-            args = t.args[0].items
-            return CallableType(self.anal_array(args),
-                                [nodes.ARG_POS] * len(args),
-                                [None] * len(args),
-                                ret_type=ret_type,
-                                fallback=fallback)
-        elif isinstance(t.args[0], EllipsisType):
-            # Callable[..., RET] (with literal ellipsis; accept arbitrary arguments)
+        if len(t.args) == 0:
+            # Callable (bare). Treat as Callable[..., Any].
             return CallableType([AnyType(), AnyType()],
                                 [nodes.ARG_STAR, nodes.ARG_STAR2],
                                 [None, None],
-                                ret_type=ret_type,
+                                ret_type=AnyType(),
                                 fallback=fallback,
                                 is_ellipsis_args=True)
-        else:
-            self.fail('Invalid function type', t)
-            return AnyType()
+        elif len(t.args) == 2:
+            ret_type = t.args[1].accept(self)
+            if isinstance(t.args[0], TypeList):
+                # Callable[[ARG, ...], RET] (ordinary callable type)
+                args = t.args[0].items
+                return CallableType(self.anal_array(args),
+                                    [nodes.ARG_POS] * len(args),
+                                    [None] * len(args),
+                                    ret_type=ret_type,
+                                    fallback=fallback)
+            elif isinstance(t.args[0], EllipsisType):
+                # Callable[..., RET] (with literal ellipsis; accept arbitrary arguments)
+                return CallableType([AnyType(), AnyType()],
+                                    [nodes.ARG_STAR, nodes.ARG_STAR2],
+                                    [None, None],
+                                    ret_type=ret_type,
+                                    fallback=fallback,
+                                    is_ellipsis_args=True)
+            else:
+                self.fail('The first argument to Callable must be a list of types or "..."', t)
+                return AnyType()
+
+        self.fail('Invalid function type', t)
+        return AnyType()
 
     def anal_array(self, a: List[Type]) -> List[Type]:
         res = []  # type: List[Type]
         for t in a:
             res.append(t.accept(self))
-        return res
-
-    def anal_bound_vars(self,
-                        a: List[Tuple[int, Type]]) -> List[Tuple[int, Type]]:
-        res = []  # type: List[Tuple[int, Type]]
-        for id, t in a:
-            res.append((id, t.accept(self)))
         return res
 
     def anal_var_defs(self, var_defs: List[TypeVarDef]) -> List[TypeVarDef]:
@@ -253,7 +271,7 @@ class TypeAnalyserPass3(TypeVisitor[None]):
     Perform these operations:
 
      * Report error for invalid type argument counts, such as List[x, y].
-     * Make implicit Any type argumenents explicit my modifying types
+     * Make implicit Any type arguments explicit my modifying types
        in-place. For example, modify Foo into Foo[Any] if Foo expects a single
        type argument.
      * If a type variable has a value restriction, ensure that the value is
@@ -288,6 +306,10 @@ class TypeAnalyserPass3(TypeVisitor[None]):
                 act = 'none'
             self.fail('"{}" expects {}, but {} given'.format(
                 info.name(), s, act), t)
+            # Construct the correct number of type arguments, as
+            # otherwise the type checker may crash as it expects
+            # things to be right.
+            t.args = [AnyType() for _ in info.type_vars]
         elif info.defn.type_vars:
             # Check type argument values.
             for arg, TypeVar in zip(t.args, info.defn.type_vars):
@@ -303,6 +325,10 @@ class TypeAnalyserPass3(TypeVisitor[None]):
                         arg_values = [arg]
                     self.check_type_var_values(info, arg_values,
                                                TypeVar.values, t)
+                if not satisfies_upper_bound(arg, TypeVar.upper_bound):
+                    self.fail('Type argument "{}" of "{}" must be '
+                              'a subtype of "{}"'.format(
+                                  arg, info.name(), TypeVar.upper_bound), t)
         for arg in t.args:
             arg.accept(self)
 
@@ -327,6 +353,9 @@ class TypeAnalyserPass3(TypeVisitor[None]):
         for item in t.items:
             item.accept(self)
 
+    def visit_star_type(self, t: StarType) -> None:
+        t.type.accept(self)
+
     # Other kinds of type are trivial, since they are atomic (or invalid).
 
     def visit_unbound_type(self, t: UnboundType) -> None:
@@ -341,8 +370,14 @@ class TypeAnalyserPass3(TypeVisitor[None]):
     def visit_none_type(self, t: NoneTyp) -> None:
         pass
 
+    def visit_deleted_type(self, t: DeletedType) -> None:
+        pass
+
     def visit_type_list(self, t: TypeList) -> None:
         self.fail('Invalid type', t)
 
     def visit_type_var(self, t: TypeVarType) -> None:
+        pass
+
+    def visit_partial_type(self, t: PartialType) -> None:
         pass

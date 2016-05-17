@@ -32,8 +32,9 @@ MypyFile:1(
     f
     Generator
     Block:1(
-      YieldStmt:1(
-        NameExpr(f [__main__.f])))))
+      ExpressionStmt:1(
+        YieldExpr:1(
+          NameExpr(f [__main__.f]))))))
 
 [case testAssert]
 assert object
@@ -501,7 +502,7 @@ MypyFile:1(
   DelStmt:2(
     NameExpr(x [__main__.x])))
 
-[case testLocalName]
+[case testDelLocalName]
 def f(x):
     del x
 [out]
@@ -513,6 +514,31 @@ MypyFile:1(
     Block:1(
       DelStmt:2(
         NameExpr(x [l])))))
+
+[case testDelMultipleThings]
+def f(x, y):
+    del x, y[0]
+[out]
+MypyFile:1(
+  FuncDef:1(
+    f
+    Args(
+      Var(x)
+      Var(y))
+    Block:1(
+      DelStmt:2(
+        TupleExpr:2(
+          NameExpr(x [l])
+          IndexExpr:2(
+            NameExpr(y [l])
+            IntExpr(0)))))))
+
+[case testDelMultipleThingsInvalid]
+def f(x, y) -> None:
+    del x, y + 1
+[out]
+main: note: In function "f":
+main:2: error: Invalid delete target
 
 [case testTry]
 class c: pass
@@ -859,3 +885,42 @@ MypyFile:1(
         NameExpr(o [l])
         Block:6(
           PassStmt:7())))))
+
+[case testWithMultiple]
+def f(a):
+    pass
+def main():
+    with f(0) as a, f(a) as b:
+        x = a, b
+[out]
+MypyFile:1(
+  FuncDef:1(
+    f
+    Args(
+      Var(a))
+    Block:1(
+      PassStmt:2()))
+  FuncDef:3(
+    main
+    Block:3(
+      WithStmt:4(
+        Expr(
+          CallExpr:4(
+            NameExpr(f [__main__.f])
+            Args(
+              IntExpr(0))))
+        Target(
+          NameExpr(a* [l]))
+        Expr(
+          CallExpr:4(
+            NameExpr(f [__main__.f])
+            Args(
+              NameExpr(a [l]))))
+        Target(
+          NameExpr(b* [l]))
+        Block:4(
+          AssignmentStmt:5(
+            NameExpr(x* [l])
+            TupleExpr:5(
+              NameExpr(a [l])
+              NameExpr(b [l]))))))))

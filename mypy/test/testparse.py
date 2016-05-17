@@ -6,7 +6,8 @@ import os.path
 
 import typing
 
-from mypy.myunit import Suite, AssertionFailure, run_test
+from mypy import defaults
+from mypy.myunit import Suite, AssertionFailure
 from mypy.test.helpers import assert_string_arrays_equal
 from mypy.test.data import parse_test_cases
 from mypy.test import config
@@ -33,9 +34,10 @@ def test_parser(testcase):
     The argument contains the description of the test case.
     """
 
-    pyversion = 3
     if testcase.file.endswith('python2.test'):
-        pyversion = 2
+        pyversion = defaults.PYTHON2_VERSION
+    else:
+        pyversion = defaults.PYTHON3_VERSION
 
     try:
         n = parse(bytes('\n'.join(testcase.input), 'ascii'), pyversion=pyversion, fnam='main')
@@ -62,8 +64,8 @@ class ParseErrorSuite(Suite):
 
 def test_parse_error(testcase):
     try:
-        # Compile temporary file.
-        parse(bytes('\n'.join(testcase.input), 'ascii'), INPUT_FILE_NAME)
+        # Compile temporary file. The test file contains non-ASCII characters.
+        parse(bytes('\n'.join(testcase.input), 'utf-8'), INPUT_FILE_NAME)
         raise AssertionFailure('No errors reported')
     except CompileError as e:
         # Verify that there was a compile error and that the error messages
@@ -72,15 +74,3 @@ def test_parse_error(testcase):
             testcase.output, e.messages,
             'Invalid compiler output ({}, line {})'.format(testcase.file,
                                                            testcase.line))
-
-
-class CombinedParserSuite(Suite):
-    def __init__(self):
-        self.test_parse = ParserSuite()
-        self.test_parse_errors = ParseErrorSuite()
-        super().__init__()
-
-
-if __name__ == '__main__':
-    import sys
-    run_test(CombinedParserSuite(), sys.argv[1:])

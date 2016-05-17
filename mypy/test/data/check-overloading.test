@@ -526,3 +526,155 @@ def f(x: A) -> A: pass
 def f(x: B) -> B: pass
 
 f(A() + B())() # E: "B" not callable
+
+[case testKeywordArgOverload]
+from typing import overload
+@overload
+def f(x: int, y: str) -> int: pass
+@overload
+def f(x: str, y: int) -> str: pass
+f(x=1, y='')() # E: "int" not callable
+f(y=1, x='')() # E: "str" not callable
+
+[case testIgnoreOverloadVariantBasedOnKeywordArg]
+from typing import overload
+@overload
+def f(x: int) -> int: pass
+@overload
+def f(y: int) -> str: pass
+f(x=1)() # E: "int" not callable
+f(y=1)() # E: "str" not callable
+
+[case testOverloadWithTupleVarArg]
+from typing import overload
+@overload
+def f(x: int, y: str) -> int: pass
+@overload
+def f(*x: str) -> str: pass
+f(*(1,))() # E: No overload variant of "f" matches argument types [Tuple[builtins.int]]
+f(*('',))() # E: "str" not callable
+f(*(1, ''))() # E: "int" not callable
+f(*(1, '', 1))() # E: No overload variant of "f" matches argument types [Tuple[builtins.int, builtins.str, builtins.int]]
+
+[case testPreferExactSignatureMatchInOverload]
+from typing import overload, List
+@overload
+def f(x: int, y: List[int] = None) -> int: pass
+@overload
+def f(x: int, y: List[str] = None) -> int: pass
+f(y=[1], x=0)() # E: "int" not callable
+f(y=[''], x=0)() # E: "int" not callable
+a = f(y=[['']], x=0) # E: List item 0 has incompatible type List[str]
+a() # E: "int" not callable
+[builtins fixtures/list.py]
+
+[case testOverloadWithDerivedFromAny]
+from typing import Any, overload
+Base = None  # type: Any
+
+class C:
+    @overload
+    def __init__(self, a: str) -> None: pass
+    @overload
+    def __init__(self, a: int) -> None: pass
+
+class Derived(Base):
+    def to_dict(self) -> C:
+        return C(self)  # fails without the fix for #1363
+C(Derived())  # fails without the hack
+C(Base())  # Always ok
+
+[case testOverloadWithBoundedTypeVar]
+from typing import overload, TypeVar
+T = TypeVar('T', bound=str)
+@overload
+def f(x: T) -> T: pass
+@overload
+def f(x: int) -> bool: pass
+class mystr(str): pass
+
+f('x')() # E: "str" not callable
+f(1)() # E: "bool" not callable
+f(1.1) # E: No overload variant of "f" matches argument types [builtins.float]
+f(mystr())() # E: "mystr" not callable
+[builtins fixtures/primitives.py]
+
+[case testOverloadedCallWithVariableTypes]
+from typing import overload, TypeVar, List
+T = TypeVar('T', bound=str)
+@overload
+def f(x: T) -> T: pass
+@overload
+def f(x: List[T]) -> None: pass
+class mystr(str): pass
+
+U = TypeVar('U', bound=mystr)
+V = TypeVar('V')
+def g(x: U, y: V) -> None:
+    f(x)() # E: "mystr" not callable
+    f(y) # E: No overload variant of "f" matches argument types [V`-2]
+    a = f([x]) # E: "f" does not return a value
+    f([y]) # E: Type argument 1 of "f" has incompatible value "V"
+    f([x, y]) # E: Type argument 1 of "f" has incompatible value "object"
+[builtins fixtures/list.py]
+[out]
+main: note: In function "g":
+
+[case testOverlapWithTypeVars]
+from typing import overload, TypeVar, Sequence
+T = TypeVar('T', bound=str)
+@overload
+def f(x: Sequence[T]) -> None: pass
+@overload
+def f(x: Sequence[int]) -> int: pass
+# These are considered overlapping despite the bound on T due to runtime type erasure.
+[out]
+main:4: error: Overloaded function signatures 1 and 2 overlap with incompatible return types
+
+[case testOverlapWithTypeVarsWithValues]
+from typing import overload, TypeVar
+AnyStr = TypeVar('AnyStr', bytes, str)
+
+@overload
+def f(x: int) -> int: pass
+@overload
+def f(x: AnyStr) -> str: pass
+
+f(1)() # E: "int" not callable
+f('1')() # E: "str" not callable
+f(b'1')() # E: "str" not callable
+f(1.0) # E: No overload variant of "f" matches argument types [builtins.float]
+
+@overload
+def g(x: AnyStr, *a: AnyStr) -> None: pass
+@overload
+def g(x: int, *a: AnyStr) -> None: pass
+
+g('foo')
+g('foo', 'bar')
+g('foo', b'bar') # E: Type argument 1 of "g" has incompatible value "object"
+g(1)
+g(1, 'foo')
+g(1, 'foo', b'bar') # E: Type argument 1 of "g" has incompatible value "object"
+[builtins fixtures/primitives.py]
+
+[case testBadOverlapWithTypeVarsWithValues]
+from typing import overload, TypeVar
+AnyStr = TypeVar('AnyStr', bytes, str)
+
+@overload
+def f(x: AnyStr) -> None: pass # E: Overloaded function signatures 1 and 2 overlap with incompatible return types
+@overload
+def f(x: str) -> bool: pass
+[builtins fixtures/primitives.py]
+
+[case testOverlappingOverloadCounting]
+from typing import overload
+class A: pass
+class B(A): pass
+@overload
+def f(x: int) -> None: pass
+@overload
+def f(x: B) -> str: pass # E: Overloaded function signatures 2 and 3 overlap with incompatible return types
+@overload
+def f(x: A) -> int: pass

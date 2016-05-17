@@ -343,6 +343,30 @@ while 1:
         z = h.pet.paws + 'a' # E: Unsupported operand types for + ("int" and "str")
 [builtins fixtures/isinstancelist.py]
 
+[case testIsinstanceTuple]
+from typing import Union
+
+class A:
+    pass
+
+class B:
+    def method2(self, arg: int):
+        return 123
+
+class C:
+    def method2(self, arg: int):
+        return 456
+
+    def method3(self, arg: str):
+        return 'abc'
+
+v = A() # type: Union[A, B, C]
+
+if isinstance(v, (B, C)):
+    v.method2(123)
+    v.method3('xyz') # E: Some element of union has no attribute "method3"
+[builtins fixtures/isinstance.py]
+
 [case testMemberAssignmentChanges-skip]
 from typing import Union
 
@@ -708,3 +732,123 @@ x = B() # type: A
 if isinstance(x, B) and x.flag:
     pass
 [builtins fixtures/isinstancelist.py]
+[case testIsinstanceExpression]
+class A:
+    pass
+
+class B(A):
+    flag = 1
+
+x = B() # type: A
+
+x.flag if isinstance(x, B) else 0
+0 if not isinstance(x, B) else x.flag
+0 if isinstance(x, B) else x.flag # E: "A" has no attribute "flag"
+[builtins fixtures/isinstancelist.py]
+
+[case testIsinstanceMultiAnd]
+class A:
+    pass
+
+class B(A):
+    flag = 1
+
+class C(A):
+    glaf = 1
+
+x = B() # type: A
+y = C() # type: A
+
+if isinstance(x, B) and isinstance(y, C):
+    x.flag += 1
+    y.glaf += 1
+    x() # E: "B" not callable
+    y() # E: "C" not callable
+else:
+    x() # E: "A" not callable
+    y() # E: "A" not callable
+[builtins fixtures/isinstancelist.py]
+
+[case testIsinstanceMultiAndSpecialCase]
+class A:
+    pass
+
+class B(A):
+    flag = 1
+
+class C(A):
+    glaf = 1
+
+x = B() # type: A
+y = C() # type: A
+
+if isinstance(x, B) and isinstance(y, int):
+    1() # type checking skipped
+[builtins fixtures/isinstancelist.py]
+
+[case testReturnWithCallExprAndIsinstance]
+
+from typing import Union
+def f(x: Union[int, str]) -> None:
+    if not isinstance(x, int):
+        return foo()
+    x()  # E: "int" not callable
+def foo(): pass
+[builtins fixtures/isinstancelist.py]
+[out]
+main: note: In function "f":
+
+[case testIsinstanceWithOverlappingUnionType]
+from typing import Union
+def f(x: Union[float, int]) -> None:
+    if isinstance(x, float):
+        pass
+    if not isinstance(x, int):
+        f(x)
+[builtins fixtures/isinstance.py]
+
+[case testIsinstanceWithOverlappingUnionType2]
+from typing import Union
+class A: pass
+class B(A): pass
+def f(x: Union[A, B]) -> None:
+    if isinstance(x, A):
+        pass
+    if not isinstance(x, B):
+        f(x)
+[builtins fixtures/isinstance.py]
+
+[case testAssertIsinstance]
+def f(x: object):
+    assert isinstance(x, int)
+    y = 0 # type: int
+    y = x
+[builtins fixtures/isinstance.py]
+
+[case testUnionAssertIsinstance]
+from typing import Union
+def f(x: Union[str, int]):
+    assert isinstance(x, int)
+    y = 0 # type: int
+    y = x
+[builtins fixtures/isinstance.py]
+
+[case testAnyAssertIsinstance]
+from typing import Any
+def f(x: Any):
+    assert isinstance(x, int)  # this should narrow x to type int
+    x + "foo"
+[builtins fixtures/isinstance.py]
+[out]
+main: note: In function "f":
+main:4: error: Unsupported left operand type for + ("int")
+
+[case testIsinstanceOfGenericClassRetainsParameters]
+from typing import List, Union
+def f(x: Union[List[int], str]) -> None:
+    if isinstance(x, list):
+        x[0]()
+[builtins fixtures/isinstancelist.py]
+[out]
+main: note: In function "f":
+main:4: error: "int" not callable

@@ -19,18 +19,20 @@ from mypy.nodes import (
     MypyFile, Import, Node, ImportAll, ImportFrom, FuncDef, OverloadedFuncDef,
     ClassDef, Decorator, Block, Var, OperatorAssignmentStmt,
     ExpressionStmt, AssignmentStmt, ReturnStmt, RaiseStmt, AssertStmt,
-    YieldStmt, DelStmt, BreakStmt, ContinueStmt, PassStmt, GlobalDecl,
-    WhileStmt, ForStmt, IfStmt, TryStmt, WithStmt, CastExpr,
+    DelStmt, BreakStmt, ContinueStmt, PassStmt, GlobalDecl,
+    WhileStmt, ForStmt, IfStmt, TryStmt, WithStmt,
     TupleExpr, GeneratorExpr, ListComprehension, ListExpr, ConditionalExpr,
     DictExpr, SetExpr, NameExpr, IntExpr, StrExpr, BytesExpr, UnicodeExpr,
     FloatExpr, CallExpr, SuperExpr, MemberExpr, IndexExpr, SliceExpr, OpExpr,
-    UnaryExpr, FuncExpr, TypeApplication, PrintStmt, ImportBase, ComparisonExpr,
-    StarExpr, YieldFromStmt, YieldFromExpr, NonlocalDecl, DictionaryComprehension,
-    SetComprehension, ComplexExpr, EllipsisExpr, YieldExpr, ExecStmt
+    UnaryExpr, FuncExpr, PrintStmt, ImportBase, ComparisonExpr,
+    StarExpr, YieldFromExpr, NonlocalDecl, DictionaryComprehension,
+    SetComprehension, ComplexExpr, EllipsisExpr, YieldExpr, ExecStmt, Argument,
+    BackquoteExpr
 )
+from mypy import defaults
 from mypy import nodes
 from mypy.errors import Errors, CompileError
-from mypy.types import Void, Type, CallableType, AnyType, UnboundType
+from mypy.types import Type, CallableType, AnyType, UnboundType
 from mypy.parsetype import (
     parse_type, parse_types, parse_signature, TypeParseError, parse_str_as_signature
 )
@@ -67,17 +69,30 @@ none = Token('')  # Empty token
 
 
 def parse(source: Union[str, bytes], fnam: str = None, errors: Errors = None,
-          pyversion: int = 3, custom_typing_module: str = None) -> MypyFile:
+          pyversion: Tuple[int, int] = defaults.PYTHON3_VERSION,
+          custom_typing_module: str = None,
+          fast_parser: bool = False) -> MypyFile:
     """Parse a source file, without doing any semantic analysis.
 
     Return the parse tree. If errors is not provided, raise ParseError
     on failure. Otherwise, use the errors object to report parse errors.
 
-    The pyversion argument determines the Python syntax variant (2 for 2.x and
-    3 for 3.x).
+    The pyversion (major, minor) argument determines the Python syntax variant.
     """
+    if fast_parser:
+        import mypy.fastparse
+        return mypy.fastparse.parse(source,
+                                    fnam=fnam,
+                                    errors=errors,
+                                    pyversion=pyversion,
+                                    custom_typing_module=custom_typing_module)
+
     is_stub_file = bool(fnam) and fnam.endswith('.pyi')
-    parser = Parser(fnam, errors, pyversion, custom_typing_module, is_stub_file=is_stub_file)
+    parser = Parser(fnam,
+                    errors,
+                    pyversion,
+                    custom_typing_module,
+                    is_stub_file=is_stub_file)
     tree = parser.parse(source)
     tree.path = fnam
     tree.is_stub = is_stub_file
@@ -108,7 +123,7 @@ class Parser:
     # Lines to ignore (using # type: ignore).
     ignored_lines = None  # type: Set[int]
 
-    def __init__(self, fnam: str, errors: Errors, pyversion: int,
+    def __init__(self, fnam: str, errors: Errors, pyversion: Tuple[int, int],
                  custom_typing_module: str = None, is_stub_file: bool = False) -> None:
         self.raise_on_error = errors is None
         self.pyversion = pyversion
@@ -183,23 +198,37 @@ class Parser:
 
     def parse_import(self) -> Import:
         self.expect('import')
-        ids = []  # type: List[Tuple[str, str]]
+        ids = []
         while True:
             id = self.parse_qualified_name()
-            if id == self.custom_typing_module:
-                id = 'typing'
-            as_id = id
+            translated = self.translate_module_id(id)
+            as_id = None
             if self.current_str() == 'as':
                 self.expect('as')
                 name_tok = self.expect_type(Name)
                 as_id = name_tok.string
-            ids.append((id, as_id))
+            elif translated != id:
+                as_id = id
+            ids.append((translated, as_id))
             if self.current_str() != ',':
                 break
             self.expect(',')
         node = Import(ids)
         self.imports.append(node)
         return node
+
+    def translate_module_id(self, id: str) -> str:
+        """Return the actual, internal module id for a source text id.
+
+        For example, translate '__builtin__' in Python 2 to 'builtins'.
+        """
+        if id == self.custom_typing_module:
+            return 'typing'
+        elif id == '__builtin__' and self.pyversion[0] == 2:
+            # HACK: __builtin__ in Python 2 is aliases to builtins. However, the implementation
+            #   is named __builtin__.py (there is another layer of translation elsewhere).
+            return 'builtins'
+        return id
 
     def parse_import_from(self) -> Node:
         self.expect('from')
@@ -212,13 +241,12 @@ class Parser:
 
         # Parse qualified name to actually import from.
         if self.current_str() == "import":
-            # Empty/defualt values.
+            # Empty/default values.
             name = ""
         else:
             name = self.parse_qualified_name()
 
-        if name == self.custom_typing_module:
-            name = 'typing'
+        name = self.translate_module_id(name)
 
         # Parse import list
         self.expect('import')
@@ -259,7 +287,7 @@ class Parser:
             self.future_options.extend(target[0] for target in targets)
         return node
 
-    def parse_import_name(self) -> Tuple[str, str]:
+    def parse_import_name(self) -> Tuple[str, Optional[str]]:
         tok = self.expect_type(Name)
         name = tok.string
         if self.current_str() == 'as':
@@ -267,7 +295,7 @@ class Parser:
             as_name = self.expect_type(Name)
             return name, as_name.string
         else:
-            return name, name
+            return name, None
 
     def parse_qualified_name(self) -> str:
         """Parse a name with an optional module qualifier.
@@ -304,10 +332,10 @@ class Parser:
         self.is_class_body = True
 
         self.expect('class')
-        metaclass = None  # type: str
+        metaclass = None
 
         try:
-            commas, base_types = [], []  # type: List[Token], List[Node]
+            base_types = []  # type: List[Node]
             try:
                 name_tok = self.expect_type(Name)
                 name = name_tok.string
@@ -319,13 +347,13 @@ class Parser:
                     while True:
                         if self.current_str() == ')':
                             break
-                        if self.current_str() == 'metaclass':
-                            metaclass = self.parse_metaclass()
+                        if self.peek().string == '=':
+                            metaclass = self.parse_class_keywords()
                             break
                         base_types.append(self.parse_super_type())
                         if self.current_str() != ',':
                             break
-                        commas.append(self.skip())
+                        self.skip()
                     self.expect(')')
             except ParseError:
                 pass
@@ -338,16 +366,31 @@ class Parser:
             self.errors.pop_type()
             self.is_class_body = old_is_class_body
 
+    def parse_class_keywords(self) -> Optional[str]:
+        """Parse the class keyword arguments, keeping the metaclass but
+        ignoring all others.  Returns None if the metaclass isn't found.
+        """
+        metaclass = None
+        while True:
+            key = self.expect_type(Name)
+            self.expect('=')
+            if key.string == 'metaclass':
+                metaclass = self.parse_qualified_name()
+            else:
+                # skip the class value
+                self.parse_expression(precedence[','])
+            if self.current_str() != ',':
+                break
+            self.skip()
+            if self.current_str() == ')':
+                break
+        return metaclass
+
     def parse_super_type(self) -> Node:
         return self.parse_expression(precedence[','])
 
-    def parse_metaclass(self) -> str:
-        self.expect('metaclass')
-        self.expect('=')
-        return self.parse_qualified_name()
-
     def parse_decorated_function_or_class(self) -> Node:
-        decorators = []  # type: List[Node]
+        decorators = []
         no_type_checks = False
         while self.current_str() == '@':
             self.expect('@')
@@ -384,45 +427,65 @@ class Parser:
         is_method = self.is_class_body
         self.is_class_body = False
         try:
-            (name, args, init, kinds,
-             typ, is_error) = self.parse_function_header(no_type_checks)
+            (name, args, typ, is_error, extra_stmts) = self.parse_function_header(no_type_checks)
+
+            arg_kinds = [arg.kind for arg in args]
+            arg_names = [arg.variable.name() for arg in args]
 
             body, comment_type = self.parse_block(allow_type=True)
+            # Potentially insert extra assignment statements to the beginning of the
+            # body, used to decompose Python 2 tuple arguments.
+            body.body[:0] = extra_stmts
             if comment_type:
                 # The function has a # type: ... signature.
                 if typ:
                     self.errors.report(
                         def_tok.line, 'Function has duplicate type signatures')
                 sig = cast(CallableType, comment_type)
-                if is_method and len(sig.arg_kinds) < len(kinds):
-                    self.check_argument_kinds(kinds,
+                if sig.is_ellipsis_args:
+                    # When we encounter an ellipsis, fill in the arg_types with
+                    # a bunch of AnyTypes, emulating Callable[..., T]
+                    arg_types = [AnyType()] * len(arg_kinds)  # type: List[Type]
+                    typ = CallableType(
+                        arg_types,
+                        arg_kinds,
+                        arg_names,
+                        sig.ret_type,
+                        None,
+                        line=def_tok.line)
+                elif is_method and len(sig.arg_kinds) < len(arg_kinds):
+                    self.check_argument_kinds(arg_kinds,
                                               [nodes.ARG_POS] + sig.arg_kinds,
                                               def_tok.line)
                     # Add implicit 'self' argument to signature.
                     first_arg = [AnyType()]  # type: List[Type]
                     typ = CallableType(
                         first_arg + sig.arg_types,
-                        kinds,
-                        [arg.name() for arg in args],
+                        arg_kinds,
+                        arg_names,
                         sig.ret_type,
-                        None)
+                        None,
+                        line=def_tok.line)
                 else:
-                    self.check_argument_kinds(kinds, sig.arg_kinds,
+                    self.check_argument_kinds(arg_kinds, sig.arg_kinds,
                                               def_tok.line)
                     typ = CallableType(
                         sig.arg_types,
-                        kinds,
-                        [arg.name() for arg in args],
+                        arg_kinds,
+                        arg_names,
                         sig.ret_type,
-                        None)
+                        None,
+                        line=def_tok.line)
 
             # If there was a serious error, we really cannot build a parse tree
             # node.
             if is_error:
                 return None
 
-            node = FuncDef(name, args, kinds, init, body, typ)
+            node = FuncDef(name, args, body, typ)
             node.set_line(def_tok)
+            if typ is not None:
+                typ.definition = node
             return node
         finally:
             self.errors.pop_function()
@@ -430,12 +493,20 @@ class Parser:
 
     def check_argument_kinds(self, funckinds: List[int], sigkinds: List[int],
                              line: int) -> None:
-        """Check that * and ** arguments are consistent.
+        """Check that arguments are consistent.
+
+        This verifies that they have the same number and the kinds correspond.
 
         Arguments:
           funckinds: kinds of arguments in function definition
           sigkinds:  kinds of arguments in signature (after # type:)
         """
+        if len(funckinds) != len(sigkinds):
+            if len(funckinds) > len(sigkinds):
+                self.fail("Type signature has too few arguments", line)
+            else:
+                self.fail("Type signature has too many arguments", line)
+            return
         for kind, token in [(nodes.ARG_STAR, '*'),
                             (nodes.ARG_STAR2, '**')]:
             if ((funckinds.count(kind) != sigkinds.count(kind)) or
@@ -444,19 +515,22 @@ class Parser:
                     "Inconsistent use of '{}' in function "
                     "signature".format(token), line)
 
-    def parse_function_header(self, no_type_checks: bool=False) -> Tuple[str, List[Var],
-                                                                         List[Node], List[int],
-                                                                         CallableType, bool]:
+    def parse_function_header(
+            self, no_type_checks: bool=False) -> Tuple[str,
+                                                       List[Argument],
+                                                       CallableType,
+                                                       bool,
+                                                       List[AssignmentStmt]]:
         """Parse function header (a name followed by arguments)
 
-        Returns a 7-tuple with the following items:
+        Return a 5-tuple with the following items:
           name
           arguments
-          initializers
-          kinds
           signature (annotation)
           error flag (True if error)
-          (name token, representation of arguments)
+          extra statements needed to decompose arguments (usually empty)
+
+        See parse_arg_list for an explanation of the final tuple item.
         """
         name = ''
 
@@ -466,27 +540,28 @@ class Parser:
 
             self.errors.push_function(name)
 
-            (args, init, kinds, typ) = self.parse_args(no_type_checks)
+            args, typ, extra_stmts = self.parse_args(no_type_checks)
         except ParseError:
             if not isinstance(self.current(), Break):
                 self.ind -= 1  # Kludge: go back to the Break token
             # Resynchronise parsing by going back over :, if present.
             if isinstance(self.tok[self.ind - 1], Colon):
                 self.ind -= 1
-            return (name, [], [], [], None, True)
+            return (name, [], None, True, [])
 
-        return (name, args, init, kinds, typ, False)
+        return (name, args, typ, False, extra_stmts)
 
-    def parse_args(self, no_type_checks: bool=False) -> Tuple[List[Var], List[Node], List[int],
-                                                              CallableType]:
-        """Parse a function signature (...) [-> t]."""
+    def parse_args(self, no_type_checks: bool=False) -> Tuple[List[Argument],
+                                                              CallableType,
+                                                              List[AssignmentStmt]]:
+        """Parse a function signature (...) [-> t].
+
+        See parse_arg_list for an explanation of the final tuple item.
+        """
         lparen = self.expect('(')
 
         # Parse the argument list (everything within '(' and ')').
-        (args, init, kinds,
-         has_inits, arg_names,
-         commas, asterisk,
-         assigns, arg_types) = self.parse_arg_list(no_type_checks=no_type_checks)
+        args, extra_stmts = self.parse_arg_list(no_type_checks=no_type_checks)
 
         self.expect(')')
 
@@ -494,59 +569,59 @@ class Parser:
             self.skip()
             if no_type_checks:
                 self.parse_expression()
-                ret_type = None  # type: Type
+                ret_type = None
             else:
                 ret_type = self.parse_type()
         else:
             ret_type = None
 
-        self.verify_argument_kinds(kinds, lparen.line)
-
-        names = [arg.name() for arg in args]
+        arg_kinds = [arg.kind for arg in args]
+        self.verify_argument_kinds(arg_kinds, lparen.line)
 
         annotation = self.build_func_annotation(
-            ret_type, arg_types, kinds, names, lparen.line)
+            ret_type, args, lparen.line)
 
-        return args, init, kinds, annotation
+        return args, annotation, extra_stmts
 
-    def build_func_annotation(self, ret_type: Type, arg_types: List[Type],
-                              kinds: List[int], names: List[str],
-                              line: int, is_default_ret: bool = False) -> CallableType:
+    def build_func_annotation(self, ret_type: Type, args: List[Argument],
+            line: int, is_default_ret: bool = False) -> CallableType:
+        arg_types = [arg.type_annotation for arg in args]
         # Are there any type annotations?
         if ((ret_type and not is_default_ret)
                 or arg_types != [None] * len(arg_types)):
             # Yes. Construct a type for the function signature.
-            return self.construct_function_type(arg_types, kinds, names,
-                                                ret_type, line)
+            return self.construct_function_type(args, ret_type, line)
         else:
             return None
 
-    def parse_arg_list(
-        self, allow_signature: bool = True,
-        no_type_checks: bool=False) -> Tuple[List[Var], List[Node],
-                                             List[int], bool,
-                                             List[Token], List[Token],
-                                             List[Token], List[Token],
-                                             List[Type]]:
+    def parse_arg_list(self, allow_signature: bool = True,
+            no_type_checks: bool=False) -> Tuple[List[Argument],
+                                                 List[AssignmentStmt]]:
         """Parse function definition argument list.
 
-        This includes everything between '(' and ')').
+        This includes everything between '(' and ')' (but not the
+        parentheses).
 
-        Return a 9-tuple with these items:
-          arguments, initializers, kinds, has inits, arg name tokens,
-          comma tokens, asterisk tokens, assignment tokens, argument types
+        Return tuple (arguments,
+                      extra statements for decomposing arguments).
+
+        The final argument is only used for Python 2 argument lists with
+        tuples; they contain destructuring assignment statements used to
+        decompose tuple arguments. For example, consider a header like this:
+
+        . def f((x, y))
+
+        The actual (sole) argument will be __tuple_arg_1 (a generated
+        name), whereas the extra statement list will contain a single
+        assignment statement corresponding to this assignment:
+
+          x, y = __tuple_arg_1
         """
-        args = []   # type: List[Var]
-        kinds = []  # type: List[int]
-        names = []  # type: List[str]
-        init = []   # type: List[Node]
-        has_inits = False
-        arg_types = []  # type: List[Type]
-
-        arg_names = []  # type: List[Token]
-        commas = []     # type: List[Token]
-        asterisk = []   # type: List[Token]
-        assigns = []    # type: List[Token]
+        args = []  # type: List[Argument]
+        extra_stmts = []
+        # This is for checking duplicate argument names.
+        arg_names = []  # type: List[str]
+        has_tuple_arg = False
 
         require_named = False
         bare_asterisk_before = -1
@@ -561,60 +636,153 @@ class Parser:
                     if bare_asterisk_before == len(args):
                         # named arguments must follow bare *
                         self.parse_error()
-                    asterisk.append(self.skip())
-                    isdict = asterisk[-1].string == '**'
-                    name = self.expect_type(Name)
-                    arg_names.append(name)
-                    names.append(name.string)
-                    var_arg = Var(name.string)
-                    args.append(var_arg)
-                    init.append(None)
-                    assigns.append(none)
-                    if isdict:
-                        kinds.append(nodes.ARG_STAR2)
-                    else:
-                        kinds.append(nodes.ARG_STAR)
 
-                    if no_type_checks:
-                        self.parse_parameter_annotation()
-                        arg_types.append(None)
-                    else:
-                        arg_types.append(self.parse_arg_type(allow_signature))
+                    arg = self.parse_asterisk_arg(
+                        allow_signature,
+                        no_type_checks,
+                    )
+                    args.append(arg)
                     require_named = True
+                elif self.current_str() == '(':
+                    arg, extra_stmt, names = self.parse_tuple_arg(len(args))
+                    args.append(arg)
+                    if extra_stmt is not None:
+                        extra_stmts.append(extra_stmt)
+                        has_tuple_arg = True
+                    arg_names.extend(names)
                 else:
-                    name = self.expect_type(Name)
-                    arg_names.append(name)
-                    args.append(Var(name.string))
-
-                    if no_type_checks:
-                        self.parse_parameter_annotation()
-                        arg_types.append(None)
-                    else:
-                        arg_types.append(self.parse_arg_type(allow_signature))
-
-                    if self.current_str() == '=':
-                        assigns.append(self.expect('='))
-                        init.append(self.parse_expression(precedence[',']))
-                        has_inits = True
-                        if require_named:
-                            kinds.append(nodes.ARG_NAMED)
-                        else:
-                            kinds.append(nodes.ARG_OPT)
-                    else:
-                        init.append(None)
-                        assigns.append(none)
-                        if require_named:
-                            # required keyword-only argument
-                            kinds.append(nodes.ARG_NAMED)
-                        else:
-                            kinds.append(nodes.ARG_POS)
+                    arg, require_named = self.parse_normal_arg(
+                        require_named,
+                        allow_signature,
+                        no_type_checks,
+                    )
+                    args.append(arg)
+                    arg_names.append(arg.variable.name())
 
                 if self.current().string != ',':
                     break
-                commas.append(self.expect(','))
 
-        return (args, init, kinds, has_inits, arg_names, commas, asterisk,
-                assigns, arg_types)
+                self.expect(',')
+
+        # Non-tuple argument dupes will be checked elsewhere. Avoid
+        # generating duplicate errors.
+        if has_tuple_arg:
+            self.check_duplicate_argument_names(arg_names)
+
+        return args, extra_stmts
+
+    def check_duplicate_argument_names(self, names: List[str]) -> None:
+        found = set()  # type: Set[str]
+        for name in names:
+            if name in found:
+                self.fail('Duplicate argument name "{}"'.format(name),
+                          self.current().line)
+            found.add(name)
+
+    def parse_asterisk_arg(self,
+            allow_signature: bool,
+            no_type_checks: bool) -> Argument:
+        asterisk = self.skip()
+        name = self.expect_type(Name)
+        variable = Var(name.string)
+        if asterisk.string == '*':
+            kind = nodes.ARG_STAR
+        else:
+            kind = nodes.ARG_STAR2
+
+        type = None
+        if no_type_checks:
+            self.parse_parameter_annotation()
+        else:
+            type = self.parse_arg_type(allow_signature)
+
+        return Argument(variable, type, None, kind)
+
+    def parse_tuple_arg(self, index: int) -> Tuple[Argument, AssignmentStmt, List[str]]:
+        """Parse a single Python 2 tuple argument.
+
+        Example: def f(x, (y, z)): ...
+
+        The tuple arguments gets transformed into an assignment in the
+        function body (the second return value).
+
+        Return tuple (argument, decomposing assignment, list of names defined).
+
+        Special case: if the argument is just (x) then it's not a tuple;
+        we indicate this by returning (argument, None, ['x']).
+        However, if the argument is (x,) then it *is* a (singleton) tuple.
+        """
+        line = self.current().line
+        # Generate a new argument name that is very unlikely to clash with anything.
+        arg_name = '__tuple_arg_{}'.format(index + 1)
+        if self.pyversion[0] >= 3:
+            self.fail('Tuples in argument lists only supported in Python 2 mode', line)
+        paren_arg = self.parse_parentheses()
+        self.verify_tuple_arg(paren_arg)
+        if isinstance(paren_arg, NameExpr):
+            # This isn't a tuple. Revert to a normal argument.
+            arg_name = paren_arg.name
+            decompose = None
+        else:
+            rvalue = NameExpr(arg_name)
+            rvalue.set_line(line)
+            decompose = AssignmentStmt([paren_arg], rvalue)
+            decompose.set_line(line)
+        kind = nodes.ARG_POS
+        initializer = None
+        if self.current_str() == '=':
+            self.expect('=')
+            initializer = self.parse_expression(precedence[','])
+            kind = nodes.ARG_OPT
+        var = Var(arg_name)
+        arg_names = self.find_tuple_arg_argument_names(paren_arg)
+        return Argument(var, None, initializer, kind), decompose, arg_names
+
+    def verify_tuple_arg(self, paren_arg: Node) -> None:
+        if isinstance(paren_arg, TupleExpr):
+            if not paren_arg.items:
+                self.fail('Empty tuple not valid as an argument', paren_arg.line)
+            for item in paren_arg.items:
+                self.verify_tuple_arg(item)
+        elif not isinstance(paren_arg, NameExpr):
+            self.fail('Invalid item in tuple argument', paren_arg.line)
+
+    def find_tuple_arg_argument_names(self, node: Node) -> List[str]:
+        result = []  # type: List[str]
+        if isinstance(node, TupleExpr):
+            for item in node.items:
+                result.extend(self.find_tuple_arg_argument_names(item))
+        elif isinstance(node, NameExpr):
+            result.append(node.name)
+        return result
+
+    def parse_normal_arg(self, require_named: bool,
+            allow_signature: bool,
+            no_type_checks: bool) -> Tuple[Argument, bool]:
+        name = self.expect_type(Name)
+        variable = Var(name.string)
+
+        type = None
+        if no_type_checks:
+            self.parse_parameter_annotation()
+        else:
+            type = self.parse_arg_type(allow_signature)
+
+        initializer = None  # type: Node
+        if self.current_str() == '=':
+            self.expect('=')
+            initializer = self.parse_expression(precedence[','])
+            if require_named:
+                kind = nodes.ARG_NAMED
+            else:
+                kind = nodes.ARG_OPT
+        else:
+            if require_named:
+                kind = nodes.ARG_NAMED
+            else:
+                kind = nodes.ARG_POS
+
+        return Argument(variable, type, initializer, kind), require_named
 
     def parse_parameter_annotation(self) -> Node:
         if self.current_str() == ':':
@@ -641,18 +809,19 @@ class Parser:
                 self.fail('Invalid argument list', line)
             found.add(kind)
 
-    def construct_function_type(self, arg_types: List[Type], kinds: List[int],
-                                names: List[str], ret_type: Type,
+    def construct_function_type(self, args: List[Argument], ret_type: Type,
                                 line: int) -> CallableType:
         # Complete the type annotation by replacing omitted types with 'Any'.
-        arg_types = arg_types[:]
+        arg_types = [arg.type_annotation for arg in args]
         for i in range(len(arg_types)):
             if arg_types[i] is None:
-                arg_types[i] = AnyType()
+                arg_types[i] = AnyType(implicit=True)
         if ret_type is None:
-            ret_type = AnyType()
-        return CallableType(arg_types, kinds, names, ret_type, None, None,
-                        None, [], line)
+            ret_type = AnyType(implicit=True)
+        arg_kinds = [arg.kind for arg in args]
+        arg_names = [arg.variable.name() for arg in args]
+        return CallableType(arg_types, arg_kinds, arg_names, ret_type, None, name=None,
+                        variables=None, line=line)
 
     # Parsing statements
 
@@ -660,7 +829,7 @@ class Parser:
         colon = self.expect(':')
         if not isinstance(self.current(), Break):
             # Block immediately after ':'.
-            nodes = []  # type: List[Node]
+            nodes = []
             while True:
                 ind = self.ind
                 stmt, is_simple = self.parse_statement()
@@ -761,12 +930,10 @@ class Parser:
             is_simple = False
         elif ts == 'global':
             stmt = self.parse_global_decl()
-        elif ts == 'nonlocal' and self.pyversion >= 3:
+        elif ts == 'nonlocal' and self.pyversion[0] >= 3:
             stmt = self.parse_nonlocal_decl()
         elif ts == 'assert':
             stmt = self.parse_assert_stmt()
-        elif ts == 'yield':
-            stmt = self.parse_yield_stmt()
         elif ts == 'del':
             stmt = self.parse_del_stmt()
         elif ts == 'with':
@@ -775,10 +942,10 @@ class Parser:
         elif ts == '@':
             stmt = self.parse_decorated_function_or_class()
             is_simple = False
-        elif ts == 'print' and (self.pyversion == 2 and
+        elif ts == 'print' and (self.pyversion[0] == 2 and
                                 'print_function' not in self.future_options):
             stmt = self.parse_print_stmt()
-        elif ts == 'exec' and self.pyversion == 2:
+        elif ts == 'exec' and self.pyversion[0] == 2:
             stmt = self.parse_exec_stmt()
         else:
             stmt = self.parse_expression_or_assignment()
@@ -822,7 +989,7 @@ class Parser:
 
     def parse_return_stmt(self) -> ReturnStmt:
         self.expect('return')
-        expr = None  # type: Node
+        expr = None
         current = self.current()
         if current.string == 'yield':
             self.parse_error()
@@ -833,8 +1000,8 @@ class Parser:
 
     def parse_raise_stmt(self) -> RaiseStmt:
         self.expect('raise')
-        expr = None  # type: Node
-        from_expr = None  # type: Node
+        expr = None
+        from_expr = None
         if not isinstance(self.current(), Break):
             expr = self.parse_expression()
             if self.current_str() == 'from':
@@ -849,31 +1016,21 @@ class Parser:
         node = AssertStmt(expr)
         return node
 
-    def parse_yield_stmt(self) -> Union[YieldStmt, YieldFromStmt]:
-        self.expect('yield')
-        expr = None  # type: Node
-        node = YieldStmt(expr)
+    def parse_yield_or_yield_from_expr(self) -> Union[YieldFromExpr, YieldExpr]:
+        self.expect("yield")
+        expr = None
+        node = YieldExpr(expr)  # type: Union[YieldFromExpr, YieldExpr]
         if not isinstance(self.current(), Break):
             if self.current_str() == "from":
                 self.expect("from")
-                expr = self.parse_expression()  # Here comes when yield from is not assigned
-                node_from = YieldFromStmt(expr)
-                return node_from  # return here, we've gotted the type
+                expr = self.parse_expression()  # when yield from is assigned to a variable
+                node = YieldFromExpr(expr)
             else:
-                expr = self.parse_expression()
-                node = YieldStmt(expr)
-        return node
-
-    def parse_yield_or_yield_from_expr(self) -> Union[YieldFromExpr, YieldExpr]:
-        self.expect("yield")
-        node = None  # type: Union[YieldFromExpr, YieldExpr]
-        if self.current_str() == "from":
-            self.expect("from")
-            expr = self.parse_expression()  # Here comes when yield from is assigned to a variable
-            node = YieldFromExpr(expr)
-        else:
-            expr = self.parse_expression()
-            node = YieldExpr(expr)
+                if self.current_str() == ')':
+                    node = YieldExpr(None)
+                else:
+                    expr = self.parse_expression()
+                    node = YieldExpr(expr)
         return node
 
     def parse_ellipsis(self) -> EllipsisExpr:
@@ -915,7 +1072,7 @@ class Parser:
         return node
 
     def parse_identifier_list(self) -> List[str]:
-        names = []  # type: List[str]
+        names = []
         while True:
             n = self.expect_type(Name)
             names.append(n.string)
@@ -962,7 +1119,7 @@ class Parser:
 
     def parse_for_index_variables(self) -> Node:
         # Parse index variables of a 'for' statement.
-        index_items = []  # type: List[Node]
+        index_items = []
         force_tuple = False
 
         while True:
@@ -988,7 +1145,7 @@ class Parser:
         is_error = False
 
         self.expect('if')
-        expr = []  # type: List[Node]
+        expr = []
         try:
             expr.append(self.parse_expression())
         except ParseError:
@@ -1028,21 +1185,15 @@ class Parser:
             if not isinstance(self.current(), Colon):
                 try:
                     t = self.current()
-                    types.append(self.parse_expression().set_line(t))
+                    types.append(self.parse_expression(precedence[',']).set_line(t))
                     if self.current_str() == 'as':
                         self.expect('as')
                         vars.append(self.parse_name_expr())
+                    elif self.pyversion[0] == 2 and self.current_str() == ',':
+                        self.expect(',')
+                        vars.append(self.parse_name_expr())
                     else:
-                        if (self.pyversion == 2 and
-                                isinstance(types[-1], TupleExpr) and
-                                len(cast(TupleExpr, types[-1]).items) == 2 and
-                                isinstance(cast(TupleExpr, types[-1]).items[1], NameExpr)):
-                            # Handle "except T, e:".
-                            tuple_expr = cast(TupleExpr, types[-1])
-                            vars.append(cast(NameExpr, tuple_expr.items[1]))
-                            types[-1] = tuple_expr.items[0]
-                        else:
-                            vars.append(None)
+                        vars.append(None)
                 except ParseError:
                     is_error = True
             else:
@@ -1068,8 +1219,8 @@ class Parser:
 
     def parse_with_stmt(self) -> WithStmt:
         self.expect('with')
-        exprs = []  # type: List[Node]
-        targets = []  # type: List[Node]
+        exprs = []
+        targets = []
         while True:
             expr = self.parse_expression(precedence[','])
             if self.current_str() == 'as':
@@ -1087,8 +1238,8 @@ class Parser:
 
     def parse_print_stmt(self) -> PrintStmt:
         self.expect('print')
-        args = []  # type: List[Node]
-        target = None  # type: Node
+        args = []
+        target = None
         if self.current_str() == '>>':
             self.skip()
             target = self.parse_expression(precedence[','])
@@ -1113,8 +1264,8 @@ class Parser:
     def parse_exec_stmt(self) -> ExecStmt:
         self.expect('exec')
         expr = self.parse_expression(precedence['in'])
-        variables1 = None  # type: Optional[Node]
-        variables2 = None  # type: Optional[Node]
+        variables1 = None
+        variables2 = None
         if self.current_str() == 'in':
             self.skip()
             variables1 = self.parse_expression(precedence[','])
@@ -1134,7 +1285,7 @@ class Parser:
         # that in expr.
         s = self.current_str()
         if s == '(':
-            # Parerenthesised expression or cast.
+            # Parenthesised expression or cast.
             expr = self.parse_parentheses()
         elif s == '[':
             expr = self.parse_list_expr()
@@ -1147,6 +1298,8 @@ class Parser:
             expr = self.parse_dict_or_set_expr()
         elif s == '*' and star_expr_allowed:
             expr = self.parse_star_expr()
+        elif s == '`' and self.pyversion[0] == 2:
+            expr = self.parse_backquote_expr()
         else:
             if isinstance(current, Name):
                 # Name expression.
@@ -1166,7 +1319,8 @@ class Parser:
             elif isinstance(current, Keyword) and s == "yield":
                 # The expression yield from and yield to assign
                 expr = self.parse_yield_or_yield_from_expr()
-            elif isinstance(current, EllipsisToken) and (self.pyversion >= 3 or self.is_stub_file):
+            elif isinstance(current, EllipsisToken) and (self.pyversion[0] >= 3
+                                                         or self.is_stub_file):
                 expr = self.parse_ellipsis()
             else:
                 # Invalid expression.
@@ -1270,7 +1424,7 @@ class Parser:
 
     def parse_list_expr(self) -> Node:
         """Parse list literal or list comprehension."""
-        items = []  # type: List[Node]
+        items = []
         self.expect('[')
         while self.current_str() != ']' and not self.eol():
             items.append(self.parse_expression(precedence['<for>'], star_expr_allowed=True))
@@ -1295,16 +1449,19 @@ class Parser:
         return gen
 
     def parse_comp_for(self) -> Tuple[List[Node], List[Node], List[List[Node]]]:
-        indices = []  # type: List[Node]
-        sequences = []  # type: List[Node]
+        indices = []
+        sequences = []
         condlists = []  # type: List[List[Node]]
         while self.current_str() == 'for':
-            conds = []  # type: List[Node]
+            conds = []
             self.expect('for')
             index = self.parse_for_index_variables()
             indices.append(index)
             self.expect('in')
-            sequence = self.parse_expression_list()
+            if self.pyversion[0] >= 3:
+                sequence = self.parse_expression(precedence['<if>'])
+            else:
+                sequence = self.parse_expression_list()
             sequences.append(sequence)
             while self.current_str() == 'if':
                 self.skip()
@@ -1382,13 +1539,19 @@ class Parser:
         items = [expr]
         while True:
             self.expect(',')
-            if (self.current_str() in [')', ']', '='] or
+            if (self.current_str() in [')', ']', '=', ':'] or
                     isinstance(self.current(), Break)):
                 break
             items.append(self.parse_expression(prec, star_expr_allowed=True))
             if self.current_str() != ',': break
         node = TupleExpr(items)
         return node
+
+    def parse_backquote_expr(self) -> BackquoteExpr:
+        self.expect('`')
+        expr = self.parse_expression()
+        self.expect('`')
+        return BackquoteExpr(expr)
 
     def parse_name_expr(self) -> NameExpr:
         tok = self.expect_type(Name)
@@ -1410,15 +1573,18 @@ class Parser:
 
     def parse_str_expr(self) -> Node:
         # XXX \uxxxx literals
-        tok = [self.expect_type(StrLit)]
-        value = (cast(StrLit, tok[0])).parsed()
-        while isinstance(self.current(), StrLit):
-            t = cast(StrLit, self.skip())
-            tok.append(t)
-            value += t.parsed()
-        node = None  # type: Node
-        if self.pyversion == 2 and 'unicode_literals' in self.future_options:
-            node = UnicodeExpr(value)
+        token = self.expect_type(StrLit)
+        value = cast(StrLit, token).parsed()
+        is_unicode = False
+        while isinstance(self.current(), (StrLit, UnicodeLit)):
+            token = self.skip()
+            if isinstance(token, StrLit):
+                value += token.parsed()
+            elif isinstance(token, UnicodeLit):
+                value += token.parsed()
+                is_unicode = True
+        if is_unicode or (self.pyversion[0] == 2 and 'unicode_literals' in self.future_options):
+            node = UnicodeExpr(value)  # type: Node
         else:
             node = StrExpr(value)
         return node
@@ -1430,7 +1596,7 @@ class Parser:
         while isinstance(self.current(), BytesLit):
             t = cast(BytesLit, self.skip())
             value += t.parsed()
-        if self.pyversion >= 3:
+        if self.pyversion[0] >= 3:
             node = BytesExpr(value)  # type: Node
         else:
             node = StrExpr(value)
@@ -1438,12 +1604,12 @@ class Parser:
 
     def parse_unicode_literal(self) -> Node:
         # XXX \uxxxx literals
-        tok = [self.expect_type(UnicodeLit)]
-        value = (cast(UnicodeLit, tok[0])).parsed()
-        while isinstance(self.current(), UnicodeLit):
-            t = cast(UnicodeLit, self.skip())
-            value += t.parsed()
-        if self.pyversion >= 3:
+        token = self.expect_type(UnicodeLit)
+        value = cast(UnicodeLit, token).parsed()
+        while isinstance(self.current(), (UnicodeLit, StrLit)):
+            token = cast(Union[UnicodeLit, StrLit], self.skip())
+            value += token.parsed()
+        if self.pyversion[0] >= 3:
             # Python 3.3 supports u'...' as an alias of '...'.
             node = StrExpr(value)  # type: Node
         else:
@@ -1516,11 +1682,10 @@ class Parser:
     def parse_member_expr(self, expr: Any) -> Node:
         self.expect('.')
         name = self.expect_type(Name)
-        node = None  # type: Node
         if (isinstance(expr, CallExpr) and isinstance(expr.callee, NameExpr)
                 and cast(NameExpr, expr.callee).name == 'super'):
             # super() expression
-            node = SuperExpr(name.string)
+            node = SuperExpr(name.string)  # type: Node
         else:
             node = MemberExpr(expr, name.string)
         return node
@@ -1562,7 +1727,7 @@ class Parser:
                 end_index = self.parse_expression(precedence[','])
             else:
                 end_index = None
-            stride = None  # type: Node
+            stride = None
             if self.current_str() == ':':
                 self.expect(':')
                 if self.current_str() not in (']', ','):
@@ -1581,7 +1746,7 @@ class Parser:
         return node
 
     def parse_comparison_expr(self, left: Node, prec: int) -> ComparisonExpr:
-        operators_str = []  # type: List[str]
+        operators_str = []
         operands = [left]
 
         while True:
@@ -1624,30 +1789,27 @@ class Parser:
     def parse_lambda_expr(self) -> FuncExpr:
         lambda_tok = self.expect('lambda')
 
-        (args, init, kinds, has_inits,
-         arg_names, commas, asterisk,
-         assigns, arg_types) = self.parse_arg_list(allow_signature=False)
-
-        names = []  # type: List[str]
-        for arg in args:
-            names.append(arg.name())
+        args, extra_stmts = self.parse_arg_list(allow_signature=False)
 
         # Use 'object' as the placeholder return type; it will be inferred
         # later. We can't use 'Any' since it could make type inference results
         # less precise.
         ret_type = UnboundType('__builtins__.object')
-        typ = self.build_func_annotation(ret_type, arg_types, kinds, names,
+        typ = self.build_func_annotation(ret_type, args,
                                          lambda_tok.line, is_default_ret=True)
 
         colon = self.expect(':')
 
         expr = self.parse_expression(precedence[','])
 
-        body = Block([ReturnStmt(expr).set_line(lambda_tok)])
+        nodes = [ReturnStmt(expr).set_line(lambda_tok)]
+        # Potentially insert extra assignment statements to the beginning of the
+        # body, used to decompose Python 2 tuple arguments.
+        nodes[:0] = extra_stmts
+        body = Block(nodes)
         body.set_line(colon)
 
-        node = FuncExpr(args, kinds, init, body, typ)
-        return node
+        return FuncExpr(args, body, typ)
 
     # Helper methods
 
@@ -1699,7 +1861,7 @@ class Parser:
         self.parse_error_at(self.current())
         raise ParseError()
 
-    def parse_error_at(self, tok: Token, skip: bool = True) -> None:
+    def parse_error_at(self, tok: Token, skip: bool = True, reason: Optional[str] = None) -> None:
         msg = ''
         if isinstance(tok, LexError):
             msg = token_repr(tok)
@@ -1707,7 +1869,8 @@ class Parser:
         elif isinstance(tok, Indent) or isinstance(tok, Dedent):
             msg = 'Inconsistent indentation'
         else:
-            msg = 'Parse error before {}'.format(token_repr(tok))
+            formatted_reason = ": {}".format(reason) if reason else ""
+            msg = 'Parse error before {}{}'.format(token_repr(tok), formatted_reason)
 
         self.errors.report(tok.line, msg)
 
@@ -1740,11 +1903,12 @@ class Parser:
         try:
             typ, self.ind = parse_type(self.tok, self.ind)
         except TypeParseError as e:
-            self.parse_error_at(e.token)
+            self.parse_error_at(e.token, reason=e.message)
             raise ParseError()
         return typ
 
     annotation_prefix_re = re.compile(r'#\s*type:')
+    ignore_prefix_re = re.compile(r'ignore\b')
 
     def parse_type_comment(self, token: Token, signature: bool) -> Type:
         """Parse a '# type: ...' annotation.
@@ -1755,7 +1919,7 @@ class Parser:
         whitespace_or_comments = token.rep().strip()
         if self.annotation_prefix_re.match(whitespace_or_comments):
             type_as_str = whitespace_or_comments.split(':', 1)[1].strip()
-            if type_as_str == 'ignore':
+            if self.ignore_prefix_re.match(type_as_str):
                 # Actually a "# type: ignore" annotation -> not a type.
                 return None
             tokens = lex.lex(type_as_str, token.line)[0]
@@ -1769,7 +1933,7 @@ class Parser:
                 else:
                     type, index = parse_signature(tokens)
             except TypeParseError as e:
-                self.parse_error_at(e.token, skip=False)
+                self.parse_error_at(e.token, skip=False, reason=e.message)
                 return None
             if index < len(tokens) - 2:
                 self.parse_error_at(tokens[index], skip=False)
@@ -1829,15 +1993,15 @@ if __name__ == '__main__':
     import sys
 
     def usage():
-        print('Usage: parse.py [--py2] [--quiet] FILE [...]')
+        print('Usage: parse.py [--py2] [--quiet] FILE [...]', file=sys.stderr)
         sys.exit(2)
 
     args = sys.argv[1:]
-    pyversion = 3
+    pyversion = defaults.PYTHON3_VERSION
     quiet = False
     while args and args[0].startswith('--'):
         if args[0] == '--py2':
-            pyversion = 2
+            pyversion = defaults.PYTHON2_VERSION
         elif args[0] == '--quiet':
             quiet = True
         else:
@@ -1857,4 +2021,4 @@ if __name__ == '__main__':
             for msg in e.messages:
                 sys.stderr.write('%s\n' % msg)
             status = 1
-    exit(status)
+    sys.exit(status)

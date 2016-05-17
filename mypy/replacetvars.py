@@ -1,9 +1,6 @@
 """Type operations"""
 
-import typing
-
-from mypy.lex import Token
-from mypy.types import Type, AnyType, NoneTyp, TypeTranslator, TypeVarType
+from mypy.types import Type, AnyType, TypeTranslator, TypeVarType
 
 
 def replace_type_vars(typ: Type, func_tvars: bool = True) -> Type:
@@ -14,7 +11,7 @@ def replace_type_vars(typ: Type, func_tvars: bool = True) -> Type:
 
 
 class ReplaceTypeVarsVisitor(TypeTranslator):
-    # Only override type variable handling; otherwise perform an indentity
+    # Only override type variable handling; otherwise perform an identity
     # transformation.
 
     func_tvars = False

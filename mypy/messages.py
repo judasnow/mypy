@@ -6,14 +6,17 @@ improve code clarity and to simplify localization (in the future)."""
 import re
 import difflib
 
-from typing import cast, List, Any, Sequence, Iterable
+from typing import cast, List, Dict, Any, Sequence, Iterable, Tuple
 
 from mypy.errors import Errors
 from mypy.types import (
     Type, CallableType, Instance, TypeVarType, TupleType, UnionType, Void, NoneTyp, AnyType,
-    Overloaded, FunctionLike
+    Overloaded, FunctionLike, DeletedType
 )
-from mypy.nodes import TypeInfo, Context, op_methods, FuncDef, reverse_type_aliases
+from mypy.nodes import (
+    TypeInfo, Context, MypyFile, op_methods, FuncDef, reverse_type_aliases,
+    ARG_STAR, ARG_STAR2
+)
 
 
 # Constants that represent simple type checker error message, i.e. messages
@@ -29,19 +32,22 @@ BOOLEAN_EXPECTED_FOR_UNTIL = 'Boolean value expected for until condition'
 BOOLEAN_EXPECTED_FOR_NOT = 'Boolean value expected for not operand'
 INVALID_EXCEPTION = 'Exception must be derived from BaseException'
 INVALID_EXCEPTION_TYPE = 'Exception type must be derived from BaseException'
-INVALID_RETURN_TYPE_FOR_YIELD = \
-    'Iterator function return type expected for "yield"'
-INVALID_RETURN_TYPE_FOR_YIELD_FROM = \
-    'Iterable function return type expected for "yield from"'
+INVALID_RETURN_TYPE_FOR_GENERATOR = \
+    'The return type of a generator function should be "Generator" or one of its supertypes'
+INVALID_GENERATOR_RETURN_ITEM_TYPE = \
+    'The return type of a generator function must be None in its third type parameter in Python 2'
+YIELD_VALUE_EXPECTED = 'Yield value expected'
 INCOMPATIBLE_TYPES = 'Incompatible types'
 INCOMPATIBLE_TYPES_IN_ASSIGNMENT = 'Incompatible types in assignment'
+INCOMPATIBLE_REDEFINITION = 'Incompatible redefinition'
 INCOMPATIBLE_TYPES_IN_YIELD = 'Incompatible types in yield'
 INCOMPATIBLE_TYPES_IN_YIELD_FROM = 'Incompatible types in "yield from"'
 INCOMPATIBLE_TYPES_IN_STR_INTERPOLATION = 'Incompatible types in string interpolation'
 INIT_MUST_HAVE_NONE_RETURN_TYPE = 'The return type of "__init__" must be None'
 GETTER_TYPE_INCOMPATIBLE_WITH_SETTER = \
     'Type of getter incompatible with setter'
-TUPLE_INDEX_MUST_BE_AN_INT_LITERAL = 'Tuple index must an integer literal'
+TUPLE_INDEX_MUST_BE_AN_INT_LITERAL = 'Tuple index must be an integer literal'
+TUPLE_SLICE_MUST_BE_AN_INT_LITERAL = 'Tuple slice must be an integer literal'
 TUPLE_INDEX_OUT_OF_RANGE = 'Tuple index out of range'
 TYPE_CONSTANT_EXPECTED = 'Type "Constant" or initializer expected'
 INCOMPATIBLE_PAIR_ITEM_TYPE = 'Incompatible Pair item type'
@@ -61,10 +67,20 @@ CANNOT_ASSIGN_TO_METHOD = 'Cannot assign to a method'
 CANNOT_ASSIGN_TO_TYPE = 'Cannot assign to a type'
 INCONSISTENT_ABSTRACT_OVERLOAD = \
     'Overloaded method has both abstract and non-abstract variants'
+READ_ONLY_PROPERTY_OVERRIDES_READ_WRITE = \
+    'Read-only property cannot override read-write property'
 INSTANCE_LAYOUT_CONFLICT = 'Instance layout conflict in multiple inheritance'
 FORMAT_REQUIRES_MAPPING = 'Format requires a mapping'
 GENERIC_TYPE_NOT_VALID_AS_EXPRESSION = \
-    "Generic type not valid as an expression any more (use '# type:' comment instead)"
+    "Generic type is prohibited as a runtime expression (use a type alias or '# type:' comment)"
+RETURN_TYPE_CANNOT_BE_CONTRAVARIANT = "Cannot use a contravariant type variable as return type"
+FUNCTION_PARAMETER_CANNOT_BE_COVARIANT = "Cannot use a covariant type variable as a parameter"
+INCOMPATIBLE_IMPORT_OF = "Incompatible import of"
+FUNCTION_TYPE_EXPECTED = "Function is missing a type annotation"
+RETURN_TYPE_EXPECTED = "Function is missing a return type annotation"
+ARGUMENT_TYPE_EXPECTED = "Function is missing a type annotation for one or more arguments"
+KEYWORD_ARGUMENT_REQUIRES_STR_KEY_TYPE = \
+    'Keyword argument only valid with "str" key type in call to "dict"'
 
 
 class MessageBuilder:
@@ -82,14 +98,17 @@ class MessageBuilder:
     # import context.
     errors = None  # type: Errors
 
+    modules = None  # type: Dict[str, MypyFile]
+
     # Number of times errors have been disabled.
     disable_count = 0
 
     # Hack to deduplicate error messages from union types
     disable_type_names = 0
 
-    def __init__(self, errors: Errors) -> None:
+    def __init__(self, errors: Errors, modules: Dict[str, MypyFile]) -> None:
         self.errors = errors
+        self.modules = modules
         self.disable_count = 0
         self.disable_type_names = 0
 
@@ -98,13 +117,16 @@ class MessageBuilder:
     #
 
     def copy(self) -> 'MessageBuilder':
-        new = MessageBuilder(self.errors.copy())
+        new = MessageBuilder(self.errors.copy(), self.modules)
         new.disable_count = self.disable_count
+        new.disable_type_names = self.disable_type_names
         return new
 
     def add_errors(self, messages: 'MessageBuilder') -> None:
         """Add errors in messages to this builder."""
-        self.errors.error_info.extend(messages.errors.error_info)
+        if self.disable_count <= 0:
+            for info in messages.errors.error_info:
+                self.errors.add_error_info(info)
 
     def disable_errors(self) -> None:
         self.disable_count += 1
@@ -115,28 +137,36 @@ class MessageBuilder:
     def is_errors(self) -> bool:
         return self.errors.is_errors()
 
-    def fail(self, msg: str, context: Context) -> None:
-        """Report an error message (unless disabled)."""
+    def report(self, msg: str, context: Context, severity: str, file: str = None) -> None:
+        """Report an error or note (unless disabled)."""
         if self.disable_count <= 0:
-            self.errors.report(context.get_line(), msg.strip())
+            self.errors.report(context.get_line(), msg.strip(), severity=severity, file=file)
 
-    def format(self, typ: Type, verbose: bool = False) -> str:
+    def fail(self, msg: str, context: Context, file: str = None) -> None:
+        """Report an error message (unless disabled)."""
+        self.report(msg, context, 'error', file=file)
+
+    def note(self, msg: str, context: Context, file: str = None) -> None:
+        """Report an error message (unless disabled)."""
+        self.report(msg, context, 'note', file=file)
+
+    def format(self, typ: Type, verbosity: int = 0) -> str:
         """Convert a type to a relatively short string that is suitable for error messages.
 
         Mostly behave like format_simple below, but never return an empty string.
         """
-        s = self.format_simple(typ)
+        s = self.format_simple(typ, verbosity)
         if s != '':
             # If format_simple returns a non-trivial result, use that.
             return s
         elif isinstance(typ, FunctionLike):
-            func = cast(FunctionLike, typ)
+            func = typ
             if func.is_type_obj():
                 # The type of a type object type can be derived from the
                 # return type (this always works).
                 itype = cast(Instance, func.items()[0].ret_type)
                 result = self.format(itype)
-                if verbose:
+                if verbosity >= 1:
                     # In some contexts we want to be explicit about the distinction
                     # between type X and the type of type object X.
                     result += ' (type object)'
@@ -156,7 +186,7 @@ class MessageBuilder:
             # Default case; we simply have to return something meaningful here.
             return 'object'
 
-    def format_simple(self, typ: Type) -> str:
+    def format_simple(self, typ: Type, verbosity: int = 0) -> str:
         """Convert simple types to string that is suitable for error messages.
 
         Return "" for complex types. Try to keep the length of the result
@@ -169,9 +199,12 @@ class MessageBuilder:
           callable type -> "" (empty string)
         """
         if isinstance(typ, Instance):
-            itype = cast(Instance, typ)
+            itype = typ
             # Get the short name of the type.
-            base_str = itype.type.name()
+            if verbosity >= 2:
+                base_str = itype.type.fullname()
+            else:
+                base_str = itype.type.name()
             if itype.args == []:
                 # No type arguments. Place the type name in quotes to avoid
                 # potential for confusion: otherwise, the type name could be
@@ -200,13 +233,13 @@ class MessageBuilder:
                     return '{}[...]'.format(base_str)
         elif isinstance(typ, TypeVarType):
             # This is similar to non-generic instance types.
-            return '"{}"'.format((cast(TypeVarType, typ)).name)
+            return '"{}"'.format(typ.name)
         elif isinstance(typ, TupleType):
             # Prefer the name of the fallback class (if not tuple), as it's more informative.
             if typ.fallback.type.fullname() != 'builtins.tuple':
                 return self.format_simple(typ.fallback)
             items = []
-            for t in (cast(TupleType, typ)).items:
+            for t in typ.items:
                 items.append(strip_quotes(self.format(t)))
             s = '"Tuple[{}]"'.format(', '.join(items))
             if len(s) < 40:
@@ -215,7 +248,7 @@ class MessageBuilder:
                 return 'tuple(length {})'.format(len(items))
         elif isinstance(typ, UnionType):
             items = []
-            for t in (cast(UnionType, typ)).items:
+            for t in typ.items:
                 items.append(strip_quotes(self.format(t)))
             s = '"Union[{}]"'.format(', '.join(items))
             if len(s) < 40:
@@ -228,6 +261,8 @@ class MessageBuilder:
             return 'None'
         elif isinstance(typ, AnyType):
             return '"Any"'
+        elif isinstance(typ, DeletedType):
+            return '<deleted>'
         elif typ is None:
             raise RuntimeError('Type is None')
         else:
@@ -236,11 +271,24 @@ class MessageBuilder:
             # message.
             return ''
 
+    def format_distinctly(self, type1: Type, type2: Type) -> Tuple[str, str]:
+        """Jointly format a pair of types to distinct strings.
+
+        Increase the verbosity of the type strings until they become distinct.
+        """
+        verbosity = 0
+        for verbosity in range(3):
+            str1 = self.format(type1, verbosity=verbosity)
+            str2 = self.format(type2, verbosity=verbosity)
+            if str1 != str2:
+                return (str1, str2)
+        return (str1, str2)
+
     #
     # Specific operations
     #
 
-    # The following operations are for genering specific error messages. They
+    # The following operations are for generating specific error messages. They
     # get some information as arguments, and they build an error message based
     # on them.
 
@@ -252,7 +300,7 @@ class MessageBuilder:
         messages. Return type Any.
         """
         if (isinstance(typ, Instance) and
-                (cast(Instance, typ)).type.has_readable_member(member)):
+                typ.type.has_readable_member(member)):
             self.fail('Member "{}" is not assignable'.format(member), context)
         elif isinstance(typ, Void):
             self.check_void(typ, context)
@@ -288,8 +336,7 @@ class MessageBuilder:
             # The non-special case: a missing ordinary attribute.
             if not self.disable_type_names:
                 failed = False
-                if isinstance(typ, Instance) and cast(Instance, typ).type.names:
-                    typ = cast(Instance, typ)
+                if isinstance(typ, Instance) and typ.type.names:
                     alternatives = set(typ.type.names.keys())
                     matches = [m for m in COMMON_MISTAKES.get(member, []) if m in alternatives]
                     matches.extend(best_matches(member, alternatives)[:3])
@@ -351,8 +398,13 @@ class MessageBuilder:
         self.fail('{} not callable'.format(self.format(typ)), context)
         return AnyType()
 
+    def untyped_function_call(self, callee: CallableType, context: Context) -> Type:
+        name = callee.name if callee.name is not None else '(unknown)'
+        self.fail('call to untyped function {} in typed context'.format(name), context)
+        return AnyType()
+
     def incompatible_argument(self, n: int, m: int, callee: CallableType, arg_type: Type,
-                              context: Context) -> None:
+                              arg_kind: int, context: Context) -> None:
         """Report an error about an incompatible argument type.
 
         The argument type is arg_type, argument number is n and the
@@ -416,8 +468,13 @@ class MessageBuilder:
                 expected_type = callee.arg_types[m - 1]
             except IndexError:  # Varargs callees
                 expected_type = callee.arg_types[-1]
+            arg_type_str, expected_type_str = self.format_distinctly(arg_type, expected_type)
+            if arg_kind == ARG_STAR:
+                arg_type_str = '*' + arg_type_str
+            elif arg_kind == ARG_STAR2:
+                arg_type_str = '**' + arg_type_str
             msg = 'Argument {} {}has incompatible type {}; expected {}'.format(
-                n, target, self.format(arg_type), self.format(expected_type))
+                n, target, arg_type_str, expected_type_str)
         self.fail(msg, context)
 
     def invalid_index_type(self, index_type: Type, base_str: str,
@@ -461,6 +518,12 @@ class MessageBuilder:
         if callee.name:
             msg += ' for {}'.format(callee.name)
         self.fail(msg, context)
+        if callee.definition:
+            fullname = callee.definition.fullname()
+            if fullname is not None and '.' in fullname:
+                module_name = fullname.rsplit('.', 1)[0]
+                path = self.modules[module_name].path
+                self.note('{} defined here'.format(callee.name), callee.definition, file=path)
 
     def duplicate_argument_value(self, callee: CallableType, index: int,
                                  context: Context) -> None:
@@ -480,6 +543,26 @@ class MessageBuilder:
         else:
             self.fail('{} does not return a value'.format(
                 capitalize((cast(Void, void_type)).source)), context)
+
+    def deleted_as_rvalue(self, typ: DeletedType, context: Context) -> None:
+        """Report an error about using an deleted type as an rvalue."""
+        if typ.source is None:
+            s = ""
+        else:
+            s = " '{}'".format(typ.source)
+        self.fail('Trying to read deleted variable{}'.format(s), context)
+
+    def deleted_as_lvalue(self, typ: DeletedType, context: Context) -> None:
+        """Report an error about using an deleted type as an lvalue.
+
+        Currently, this only occurs when trying to assign to an
+        exception variable outside the local except: blocks.
+        """
+        if typ.source is None:
+            s = ""
+        else:
+            s = " '{}'".format(typ.source)
+        self.fail('Assignment to variable{} outside except: block'.format(s), context)
 
     def no_variant_matches_arguments(self, overload: Overloaded, arg_types: List[Type],
                                      context: Context) -> None:
@@ -597,8 +680,7 @@ class MessageBuilder:
         self.fail('List or tuple expected as variable arguments', context)
 
     def invalid_keyword_var_arg(self, typ: Type, context: Context) -> None:
-        if isinstance(typ, Instance) and (
-                (cast(Instance, typ)).type.fullname() == 'builtins.dict'):
+        if isinstance(typ, Instance) and (typ.type.fullname() == 'builtins.dict'):
             self.fail('Keywords must be strings', context)
         else:
             self.fail('Argument after ** must be a dictionary',
@@ -652,8 +734,14 @@ class MessageBuilder:
     def cannot_determine_type(self, name: str, context: Context) -> None:
         self.fail("Cannot determine type of '%s'" % name, context)
 
+    def cannot_determine_type_in_base(self, name: str, base: str, context: Context) -> None:
+        self.fail("Cannot determine type of '%s' in base class '%s'" % (name, base), context)
+
     def invalid_method_type(self, sig: CallableType, context: Context) -> None:
         self.fail('Invalid method type', context)
+
+    def invalid_class_method_type(self, sig: CallableType, context: Context) -> None:
+        self.fail('Invalid class method type', context)
 
     def incompatible_conditional_function_def(self, defn: FuncDef) -> None:
         self.fail('All conditional function variants must have identical '
@@ -664,7 +752,7 @@ class MessageBuilder:
                                           context: Context) -> None:
         attrs = format_string_list("'%s'" % a for a in abstract_attributes[:5])
         self.fail("Cannot instantiate abstract class '%s' with abstract "
-                  "method%s %s" % (class_name, plural_s(abstract_attributes),
+                  "attribute%s %s" % (class_name, plural_s(abstract_attributes),
                                    attrs),
                   context)
 
@@ -695,20 +783,27 @@ class MessageBuilder:
 
     def invalid_reverse_operator_signature(self, reverse: str, other: str,
                                            context: Context) -> None:
-        self.fail('"Any" return type expected since argument to {} does not '
-                  'support {}'.format(reverse, other), context)
+        self.fail('"Any" return type expected since argument to {} '
+                  'does not support {}'.format(reverse, other), context)
 
     def reverse_operator_method_with_any_arg_must_return_any(
             self, method: str, context: Context) -> None:
-        self.fail('"Any" return type expected since argument to {} has type '
-                  '"Any"'.format(method), context)
+        self.fail('"Any" return type expected since argument to {} '
+                  'has type "Any"'.format(method), context)
 
     def operator_method_signatures_overlap(
             self, reverse_class: str, reverse_method: str, forward_class: str,
             forward_method: str, context: Context) -> None:
-        self.fail('Signatures of "{}" of "{}" and "{}" of "{}" are unsafely '
-                  'overlapping'.format(reverse_method, reverse_class,
-                                       forward_method, forward_class), context)
+        self.fail('Signatures of "{}" of "{}" and "{}" of "{}" '
+                  'are unsafely overlapping'.format(
+                      reverse_method, reverse_class,
+                      forward_method, forward_class),
+                  context)
+
+    def forward_operator_not_callable(
+            self, forward_method: str, context: Context) -> None:
+        self.fail('Forward operator "{}" is not callable'.format(
+            forward_method), context)
 
     def signatures_incompatible(self, method: str, other_method: str,
                                 context: Context) -> None:
@@ -722,6 +817,9 @@ class MessageBuilder:
 
     def invalid_signature(self, func_type: Type, context: Context) -> None:
         self.fail('Invalid signature "{}"'.format(func_type), context)
+
+    def reveal_type(self, typ: Type, context: Context) -> None:
+        self.fail('Revealed type is \'{}\''.format(typ), context)
 
 
 def capitalize(s: str) -> str:
@@ -772,8 +870,8 @@ def callable_name(type: CallableType) -> str:
 
 
 def temp_message_builder() -> MessageBuilder:
-    """Return a message builder usable for collecting errors locally."""
-    return MessageBuilder(Errors())
+    """Return a message builder usable for throwaway errors (which may not format properly)."""
+    return MessageBuilder(Errors(), {})
 
 
 # For hard-coding suggested missing member alternatives.

@@ -8,9 +8,11 @@ from mypy.types import (
     Type, AnyType, TupleType, Instance, UnionType
 )
 from mypy.nodes import (
-    Node, StrExpr, TupleExpr, DictExpr, Context
+    Node, StrExpr, BytesExpr, TupleExpr, DictExpr, Context
 )
-import mypy.checker
+if False:
+    # break import cycle only needed for mypy
+    import mypy.checker
 from mypy import messages
 from mypy.messages import MessageBuilder
 
@@ -31,7 +33,7 @@ class ConversionSpecifier:
 
 
 class StringFormatterChecker:
-    """String interplation/formatter type checker.
+    """String interpolation/formatter type checker.
 
     This class works closely together with checker.ExpressionChecker.
     """
@@ -70,7 +72,7 @@ class StringFormatterChecker:
         key_regex = r'(\((\w*)\))?'  # (optional) parenthesised sequence of characters
         flags_regex = r'([#0\-+ ]*)'  # (optional) sequence of flags
         width_regex = r'(\*|[1-9][0-9]*)?'  # (optional) minimum field width (* or numbers)
-        precision_regex = r'(?:\.(\*|[0-9]+))?'  # (optional) . followed by * of numbers
+        precision_regex = r'(?:\.(\*|[0-9]+)?)?'  # (optional) . followed by * of numbers
         length_mod_regex = r'[hlL]?'  # (optional) length modifier (unused)
         type_regex = r'(.)?'  # conversion type
         regex = ('%' + key_regex + flags_regex + width_regex +
@@ -118,7 +120,10 @@ class StringFormatterChecker:
         else:
             if len(checkers) == 1:
                 check_node, check_type = checkers[0]
-                check_node(replacements)
+                if isinstance(rhs_type, TupleType) and len(rhs_type.items) == 1:
+                    check_type(rhs_type.items[0])
+                else:
+                    check_node(replacements)
             elif isinstance(replacements, TupleExpr):
                 for checks, rep_node in zip(checkers, replacements.items):
                     check_node, check_type = checks
@@ -131,7 +136,7 @@ class StringFormatterChecker:
     def check_mapping_str_interpolation(self, specifiers: List[ConversionSpecifier],
                                        replacements: Node) -> None:
         dict_with_only_str_literal_keys = (isinstance(replacements, DictExpr) and
-                                          all(isinstance(k, StrExpr)
+                                          all(isinstance(k, (StrExpr, BytesExpr))
                                               for k, v in cast(DictExpr, replacements).items))
         if dict_with_only_str_literal_keys:
             mapping = {}  # type: Dict[str, Type]
@@ -250,7 +255,7 @@ class StringFormatterChecker:
         def check_node(node: Node) -> None:
             """int, or str with length 1"""
             type = self.accept(node, expected_type)
-            if isinstance(node, StrExpr) and len(cast(StrExpr, node).value) != 1:
+            if isinstance(node, (StrExpr, BytesExpr)) and len(cast(StrExpr, node).value) != 1:
                 self.msg.requires_int_or_char(context)
             check_type(type)
 

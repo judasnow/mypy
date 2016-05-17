@@ -9,17 +9,17 @@ from mypy.nodes import (
     MypyFile, Import, Node, ImportAll, ImportFrom, FuncItem, FuncDef,
     OverloadedFuncDef, ClassDef, Decorator, Block, Var,
     OperatorAssignmentStmt, ExpressionStmt, AssignmentStmt, ReturnStmt,
-    RaiseStmt, AssertStmt, YieldStmt, DelStmt, BreakStmt, ContinueStmt,
+    RaiseStmt, AssertStmt, DelStmt, BreakStmt, ContinueStmt,
     PassStmt, GlobalDecl, WhileStmt, ForStmt, IfStmt, TryStmt, WithStmt,
-    CastExpr, TupleExpr, GeneratorExpr, ListComprehension, ListExpr,
+    CastExpr, RevealTypeExpr, TupleExpr, GeneratorExpr, ListComprehension, ListExpr,
     ConditionalExpr, DictExpr, SetExpr, NameExpr, IntExpr, StrExpr, BytesExpr,
     UnicodeExpr, FloatExpr, CallExpr, SuperExpr, MemberExpr, IndexExpr,
     SliceExpr, OpExpr, UnaryExpr, FuncExpr, TypeApplication, PrintStmt,
     SymbolTable, RefExpr, TypeVarExpr, PromoteExpr,
-    ComparisonExpr, TempNode, StarExpr, YieldFromStmt,
+    ComparisonExpr, TempNode, StarExpr,
     YieldFromExpr, NamedTupleExpr, NonlocalDecl, SetComprehension,
     DictionaryComprehension, ComplexExpr, TypeAliasExpr, EllipsisExpr,
-    YieldExpr, ExecStmt
+    YieldExpr, ExecStmt, Argument, BackquoteExpr
 )
 from mypy.types import Type, FunctionLike, Instance
 from mypy.visitor import NodeVisitor
@@ -51,7 +51,8 @@ class TransformVisitor(NodeVisitor[Node]):
 
     def visit_mypy_file(self, node: MypyFile) -> Node:
         # NOTE: The 'names' and 'imports' instance variables will be empty!
-        new = MypyFile(self.nodes(node.defs), [], node.is_bom)
+        new = MypyFile(self.nodes(node.defs), [], node.is_bom,
+                       ignored_lines=set(node.ignored_lines))
         new._name = node._name
         new._fullname = node._fullname
         new.path = node.path
@@ -67,12 +68,38 @@ class TransformVisitor(NodeVisitor[Node]):
     def visit_import_all(self, node: ImportAll) -> Node:
         return ImportAll(node.id, node.relative)
 
+    def copy_argument(self, argument: Argument) -> Argument:
+        init_stmt = None  # type: AssignmentStmt
+
+        if argument.initialization_statement:
+            init_lvalue = cast(
+                NameExpr,
+                self.node(argument.initialization_statement.lvalues[0]),
+            )
+            init_lvalue.set_line(argument.line)
+            init_stmt = AssignmentStmt(
+                [init_lvalue],
+                self.node(argument.initialization_statement.rvalue),
+                self.optional_type(argument.initialization_statement.type),
+            )
+
+        arg = Argument(
+            self.visit_var(argument.variable),
+            argument.type_annotation,
+            argument.initializer,
+            argument.kind,
+            init_stmt,
+        )
+
+        # Refresh lines of the inner things
+        arg.set_line(argument.line)
+
+        return arg
+
     def visit_func_def(self, node: FuncDef) -> FuncDef:
         # Note that a FuncDef must be transformed to a FuncDef.
         new = FuncDef(node.name(),
-                      [self.visit_var(var) for var in node.args],
-                      node.arg_kinds[:],
-                      [None] * len(node.init),
+                      [self.copy_argument(arg) for arg in node.arguments],
                       self.block(node.body),
                       cast(FunctionLike, self.optional_type(node.type)))
 
@@ -89,9 +116,7 @@ class TransformVisitor(NodeVisitor[Node]):
         return new
 
     def visit_func_expr(self, node: FuncExpr) -> Node:
-        new = FuncExpr([self.visit_var(var) for var in node.args],
-                       node.arg_kinds[:],
-                       [None] * len(node.init),
+        new = FuncExpr([self.copy_argument(arg) for arg in node.arguments],
                        self.block(node.body),
                        cast(FunctionLike, self.optional_type(node.type)))
         self.copy_function_attributes(new, node)
@@ -102,10 +127,9 @@ class TransformVisitor(NodeVisitor[Node]):
         new.info = original.info
         new.min_args = original.min_args
         new.max_pos = original.max_pos
-        new.is_implicit = original.is_implicit
         new.is_overload = original.is_overload
         new.is_generator = original.is_generator
-        new.init = self.duplicate_inits(original.init)
+        new.line = original.line
 
     def duplicate_inits(self,
                         inits: List[AssignmentStmt]) -> List[AssignmentStmt]:
@@ -215,12 +239,6 @@ class TransformVisitor(NodeVisitor[Node]):
 
     def visit_assert_stmt(self, node: AssertStmt) -> Node:
         return AssertStmt(self.node(node.expr))
-
-    def visit_yield_stmt(self, node: YieldStmt) -> Node:
-        return YieldStmt(self.node(node.expr))
-
-    def visit_yield_from_stmt(self, node: YieldFromStmt) -> Node:
-        return YieldFromStmt(self.node(node.expr))
 
     def visit_del_stmt(self, node: DelStmt) -> Node:
         return DelStmt(self.node(node.expr))
@@ -345,6 +363,9 @@ class TransformVisitor(NodeVisitor[Node]):
         return CastExpr(self.node(node.expr),
                         self.type(node.type))
 
+    def visit_reveal_type_expr(self, node: RevealTypeExpr) -> Node:
+        return RevealTypeExpr(self.node(node.expr))
+
     def visit_super_expr(self, node: SuperExpr) -> Node:
         new = SuperExpr(node.name)
         new.info = node.info
@@ -421,9 +442,13 @@ class TransformVisitor(NodeVisitor[Node]):
                                self.node(node.if_expr),
                                self.node(node.else_expr))
 
+    def visit_backquote_expr(self, node: BackquoteExpr) -> Node:
+        return BackquoteExpr(self.node(node.expr))
+
     def visit_type_var_expr(self, node: TypeVarExpr) -> Node:
         return TypeVarExpr(node.name(), node.fullname(),
-                           self.types(node.values), variance=node.variance)
+                           self.types(node.values),
+                           self.type(node.upper_bound), variance=node.variance)
 
     def visit_type_alias_expr(self, node: TypeAliasExpr) -> TypeAliasExpr:
         return TypeAliasExpr(node.type)

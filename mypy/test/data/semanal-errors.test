@@ -17,7 +17,7 @@ main:3: error: Name 'y' is not defined
 
 [case testUndefinedVariableWithinFunctionContext]
 import typing
-def f():
+def f() -> None:
   x
 y
 [out]
@@ -39,7 +39,7 @@ import typing
 class A:
   def f(self): pass
 class B:
-  def g(self):
+  def g(self) -> None:
     f # error
     g # error
 [out]
@@ -178,7 +178,7 @@ main:4: error: Name 'x' already defined
 [case testLocalVarRedefinition]
 import typing
 class A: pass
-def f():
+def f() -> None:
   x = 0 # type: A
   x = 0 # type: A
 [out]
@@ -230,19 +230,22 @@ main:2: error: Module has no attribute 'y'
 import typing
 import m
 [out]
-main:2: error: No module named 'm'
+main:2: error: Cannot find module named 'm'
+main:2: note: (Perhaps setting MYPYPATH or using the "--silent-imports" flag would help)
 
 [case testMissingModule2]
 import typing
 from m import x
 [out]
-main:2: error: No module named 'm'
+main:2: error: Cannot find module named 'm'
+main:2: note: (Perhaps setting MYPYPATH or using the "--silent-imports" flag would help)
 
 [case testMissingModule3]
 import typing
 from m import *
 [out]
-main:2: error: No module named 'm'
+main:2: error: Cannot find module named 'm'
+main:2: note: (Perhaps setting MYPYPATH or using the "--silent-imports" flag would help)
 
 [case testMissingModuleRelativeImport]
 import typing
@@ -251,7 +254,8 @@ import m
 from .x import y
 [out]
 main:2: note: In module imported here:
-tmp/m/__init__.py:1: error: No module named 'm.x'
+tmp/m/__init__.py:1: error: Cannot find module named 'm.x'
+tmp/m/__init__.py:1: note: (Perhaps setting MYPYPATH or using the "--silent-imports" flag would help)
 
 [case testMissingModuleRelativeImport2]
 import typing
@@ -261,7 +265,8 @@ import m.a
 from .x import y
 [out]
 main:2: note: In module imported here:
-tmp/m/a.py:1: error: No module named 'm.x'
+tmp/m/a.py:1: error: Cannot find module named 'm.x'
+tmp/m/a.py:1: note: (Perhaps setting MYPYPATH or using the "--silent-imports" flag would help)
 
 [case testModuleNotImported]
 import typing
@@ -290,7 +295,7 @@ from . import m
 [out]
 main:1: error: No parent module -- cannot perform relative import
 
-[case testRelativeImportAtTopLevelModule]
+[case testRelativeImportAtTopLevelModule2]
 from .. import m
 [out]
 main:1: error: No parent module -- cannot perform relative import
@@ -311,15 +316,17 @@ main:4: error: Name 'n' is not defined
 import typing
 import m.n
 [out]
-main:2: error: No module named 'm.n'
+main:2: error: Cannot find module named 'm.n'
+main:2: note: (Perhaps setting MYPYPATH or using the "--silent-imports" flag would help)
 
 [case testMissingPackage]
 import typing
 from m.n import x
 from a.b import *
 [out]
-main:2: error: No module named 'm.n'
-main:3: error: No module named 'a.b'
+main:2: error: Cannot find module named 'm.n'
+main:2: note: (Perhaps setting MYPYPATH or using the "--silent-imports" flag would help)
+main:3: error: Cannot find module named 'a.b'
 
 [case testErrorInImportedModule]
 import m
@@ -350,7 +357,8 @@ m.n.x
 [file m/n.py]
 x = 1
 [out]
-main:2: error: No module named 'm.n'
+main:2: error: Cannot find module named 'm.n'
+main:2: note: (Perhaps setting MYPYPATH or using the "--silent-imports" flag would help)
 
 [case testBreakOutsideLoop]
 break
@@ -448,6 +456,7 @@ main:3: error: Two starred expressions in assignment
 main:4: error: Two starred expressions in assignment
 
 [case testTwoStarExpressionsInForStmt]
+z = 1
 for a, *b, *c in z:
     pass
 for *a, (*b, c) in z:
@@ -457,9 +466,9 @@ for a, (*b, *c) in z:
 for [*a, *b] in z:
     pass
 [out]
-main:1: error: Two starred expressions in assignment
-main:5: error: Two starred expressions in assignment
-main:7: error: Two starred expressions in assignment
+main:2: error: Two starred expressions in assignment
+main:6: error: Two starred expressions in assignment
+main:8: error: Two starred expressions in assignment
 
 [case testTwoStarExpressionsInGeneratorExpr]
 (a for a, *b, *c in [])
@@ -514,7 +523,7 @@ main:4: error: Invalid type "__main__.t"
 from typing import TypeVar, Generic
 t = TypeVar('t')
 class c(Generic[t]):
-    def f(self): x = t
+    def f(self) -> None: x = t
 def f(y: t): x = t
 [out]
 main: note: In function "f":
@@ -537,7 +546,7 @@ main:2: error: Name 'B' is not defined
 [case testSuperOutsideClass]
 class A: pass
 super().x
-def f(): super().y
+def f() -> None: super().y
 [out]
 main:2: error: "super" used outside class
 main: note: In function "f":
@@ -563,7 +572,7 @@ main:5: error: Name 'f' already defined
 
 [case testInvalidGlobalDecl]
 import typing
-def f():
+def f() -> None:
     global x
     x = None
 [out]
@@ -573,7 +582,7 @@ main:4: error: Name 'x' is not defined
 [case testInvalidNonlocalDecl]
 import typing
 def f():
-    def g():
+    def g() -> None:
        nonlocal x
        x = None
 [out]
@@ -584,7 +593,7 @@ main:5: error: Name 'x' is not defined
 [case testNonlocalDeclNotMatchingGlobal]
 import typing
 x = None
-def f():
+def f() -> None:
     nonlocal x
     x = None
 [out]
@@ -596,7 +605,7 @@ main:5: error: Name 'x' is not defined
 import typing
 def g():
     x = None
-    def f(x):
+    def f(x) -> None:
         nonlocal x
         x = None
 [out]
@@ -614,7 +623,7 @@ import typing
 x = 1
 def f():
     x = 1
-    def g():
+    def g() -> None:
        global x
        nonlocal x
        x = None
@@ -627,7 +636,7 @@ import typing
 x = 1
 def f():
     x = 1
-    def g():
+    def g() -> None:
        nonlocal x
        global x
        x = None
@@ -637,7 +646,7 @@ main:7: error: Name 'x' is nonlocal and global
 
 [case testNestedFunctionAndScoping]
 import typing
-def f(x):
+def f(x) -> None:
     def g(y):
         z = x
     z
@@ -650,7 +659,7 @@ main:6: error: Name 'y' is not defined
 
 [case testMultipleNestedFunctionDef]
 import typing
-def f(x):
+def f(x) -> None:
     def g(): pass
     x = 1
     def g(): pass
@@ -660,7 +669,7 @@ main:5: error: Name 'g' already defined
 
 [case testRedefinedOverloadedFunction]
 from typing import overload, Any
-def f():
+def f() -> None:
     @overload
     def p(o: object) -> None: pass # no error
     @overload
@@ -674,8 +683,8 @@ main:8: error: Name 'p' already defined
 [case testNestedFunctionInMethod]
 import typing
 class A:
-   def f(self):
-       def g():
+   def f(self) -> None:
+       def g() -> None:
            x
        y
 [out]
@@ -722,21 +731,6 @@ y # E: Name 'y' is not defined
 [file x.py]
 y = 1
 [out]
-
-[case testImportTwice]
-import typing
-from x import a, a
-def f() -> None:
-    from x import a
-    from x import a
-import x
-import x # ok, since we may import multiple submodules of a package
-[file x.py]
-a = 1
-[out]
-main:2: error: Name 'a' already defined
-main: note: In function "f":
-main:5: error: Name 'a' already defined
 
 [case testScopeOfNestedClass]
 import typing
@@ -792,61 +786,10 @@ class D(str): pass # ok
 class A(A): pass # E: Cycle in inheritance hierarchy
 [out]
 
-[case testAssignToFuncDef]
-def f(): pass
-f = None # E: Invalid assignment target
-[out]
-
-[case testAssignToFuncDefViaModule]
-import m
-m.f = None # E: Invalid assignment target
-[file m.py]
-def f(): pass
-[out]
-
-[case testAssignToFuncDefViaNestedModules]
-import m.n
-m.n.f = None # E: Invalid assignment target
-[file m/__init__.py]
-[file m/n.py]
-def f(): pass
-[out]
-
-[case testAssignToFuncDefViaImport]
-from m import f # E: Name 'f' already defined
-f = None
-[file m.py]
-def f(): pass
-[out]
-
-[case testAssignToFuncDefViaImport2]
-from m import * # E: Name 'f' already defined
-f = None
-[file m.py]
-def f(): pass
-[out]
-
-[case testAssignToFuncDefViaGlobalDecl2]
-import typing
-from m import f
-def g() -> None:
-    global f
-    f = None # E: Invalid assignment target
-[file m.py]
-def f(): pass
-[out]
-main: note: In function "g":
-
 [case testAssignToTypeDef]
 import typing
 class A: pass
 A = None # E: Invalid assignment target
-[out]
-
-[case testInvalidQualifiedName]
-from typing import Any
-x = 0 # type: Any
-z = 0 # type: x.y    # E: Invalid type "__main__.x"
 [out]
 
 [case testInvalidCastTargetSyntax]
@@ -903,7 +846,7 @@ x = None # type: Callable[int, str]
 y = None # type: Callable[int]
 z = None # type: Callable[int, int, int]
 [out]
-main:2: error: Invalid function type
+main:2: error: The first argument to Callable must be a list of types or "..."
 main:3: error: Invalid function type
 main:4: error: Invalid function type
 
@@ -918,7 +861,7 @@ main:3: error: 'abstractmethod' used with a non-method
 [case testAbstractNestedFunction]
 import typing
 from abc import abstractmethod
-def g():
+def g() -> None:
   @abstractmethod
   def foo(): pass
 [out]
@@ -1062,11 +1005,12 @@ d = TypeVar('D')    # E: Unexpected TypeVar() argument value
 e = TypeVar('e', int, str, x=1) # E: Unexpected argument to TypeVar(): x
 f = TypeVar('f', (int, str)) # E: Type expected
 g = TypeVar('g', x=(int, str)) # E: Unexpected argument to TypeVar(): x
+h = TypeVar('h', bound=1) # E: TypeVar 'bound' must be a type
 [out]
 
 [case testMoreInvalidTypevarArguments]
 from typing import TypeVar
-T = TypeVar('T', bound=int) # E: TypeVar 'bound' argument not supported yet
+T = TypeVar('T', int, str, bound=bool) # E: TypeVar cannot have both values and an upper bound
 S = TypeVar('S', covariant=True, contravariant=True) \
     # E: TypeVar cannot be both covariant and contravariant
 [builtins fixtures/bool.py]
@@ -1189,7 +1133,7 @@ import typing
 @staticmethod
 def f(): pass
 class A:
-  def g(self):
+  def g(self) -> None:
     @staticmethod
     def h(): pass
 [builtins fixtures/staticmethod.py]
@@ -1203,7 +1147,7 @@ import typing
 @classmethod
 def f(): pass
 class A:
-  def g(self):
+  def g(self) -> None:
     @classmethod
     def h(): pass
 [builtins fixtures/classmethod.py]
@@ -1318,7 +1262,7 @@ main:4: error: Name '_m.Function' is not defined
 x = None # type: Function[[], None]
 [out]
 main:1: error: Name 'Function' is not defined
-main:1: error: (Did you mean 'typing.Callable'?)
+main:1: note: (Did you mean 'typing.Callable'?)
 
 [case testInvalidWithTarget]
 def f(): pass
@@ -1330,15 +1274,13 @@ from typing import typevar
 t = typevar('t')
 [out]
 main:1: error: Module has no attribute 'typevar' (it's now called 'typing.TypeVar')
-main:2: error: Name 'typevar' is not defined
-main:2: error: (Did you mean 'typing.TypeVar'?)
 --' (this fixes syntax highlighting)
 
 [case testUseObsoleteNameForTypeVar2]
 t = typevar('t')
 [out]
 main:1: error: Name 'typevar' is not defined
-main:1: error: (Did you mean 'typing.TypeVar'?)
+main:1: note: (Did you mean 'typing.TypeVar'?)
 
 [case testUseObsoleteNameForTypeVar3]
 import typing
@@ -1387,3 +1329,33 @@ x = 1
 [file m/m2.pyi]
 y = 1
 [out]
+
+[case testMissingStubForThirdPartyModule]
+import nosexcover
+[out]
+main:1: error: No library stub file for module 'nosexcover'
+main:1: note: (Stub files are from https://github.com/python/typeshed)
+
+[case testMissingStubForStdLibModule]
+import tabnanny
+[out]
+main:1: error: No library stub file for standard library module 'tabnanny'
+main:1: note: (Stub files are from https://github.com/python/typeshed)
+
+[case testMissingStubForTwoModules]
+import tabnanny
+import tkinter
+[out]
+main:1: error: No library stub file for standard library module 'tabnanny'
+main:1: note: (Stub files are from https://github.com/python/typeshed)
+main:2: error: No library stub file for standard library module 'tkinter'
+
+[case testListComprehensionSpecialScoping]
+class A:
+    x = 1
+    y = 1
+    z = 1
+    [x for i in z if y]
+[out]
+main:5: error: Name 'y' is not defined
+main:5: error: Name 'x' is not defined

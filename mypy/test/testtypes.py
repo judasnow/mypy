@@ -3,7 +3,7 @@
 from typing import List
 
 from mypy.myunit import (
-    Suite, assert_equal, assert_true, assert_false, run_test
+    Suite, assert_equal, assert_true, assert_false
 )
 from mypy.erasetype import erase_type
 from mypy.expandtype import expand_type
@@ -84,13 +84,13 @@ class TypesSuite(Suite):
 
     def test_generic_function_type(self):
         c = CallableType([self.x, self.y], [ARG_POS, ARG_POS], [None, None],
-                     self.y, self.function, None,
-                     [TypeVarDef('X', -1, None, self.fx.o)])
+                     self.y, self.function, name=None,
+                     variables=[TypeVarDef('X', -1, None, self.fx.o)])
         assert_equal(str(c), 'def [X] (X?, Y?) -> Y?')
 
         v = [TypeVarDef('Y', -1, None, self.fx.o),
              TypeVarDef('X', -2, None, self.fx.o)]
-        c2 = CallableType([], [], [], Void(None), self.function, None, v)
+        c2 = CallableType([], [], [], Void(None), self.function, name=None, variables=v)
         assert_equal(str(c2), 'def [Y, X] ()')
 
 
@@ -268,8 +268,8 @@ class TypeOpsSuite(Suite):
                             [None] * (len(a) - 1),
                             a[-1],
                             self.fx.function,
-                            None,
-                            tv)
+                            name=None,
+                            variables=tv)
 
 
 class JoinSuite(Suite):
@@ -729,17 +729,3 @@ class MeetSuite(Suite):
         return CallableType(a[:-1],
                             [ARG_POS] * n, [None] * n,
                             a[-1], self.fx.function)
-
-
-class CombinedTypesSuite(Suite):
-    def __init__(self):
-        self.test_types = TypesSuite()
-        self.test_type_ops = TypeOpsSuite()
-        self.test_join = JoinSuite()
-        self.test_meet = MeetSuite()
-        super().__init__()
-
-
-if __name__ == '__main__':
-    import sys
-    run_test(CombinedTypesSuite(), sys.argv[1:])

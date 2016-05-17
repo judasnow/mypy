@@ -39,16 +39,17 @@ class StrConv(NodeVisitor[str]):
         args = []
         init = []
         extra = []
-        for i, kind in enumerate(o.arg_kinds):
+        for i, arg in enumerate(o.arguments):
+            kind = arg.kind
             if kind == mypy.nodes.ARG_POS:
-                args.append(o.args[i])
+                args.append(o.arguments[i].variable)
             elif kind in (mypy.nodes.ARG_OPT, mypy.nodes.ARG_NAMED):
-                args.append(o.args[i])
-                init.append(o.init[i])
+                args.append(o.arguments[i].variable)
+                init.append(o.arguments[i].initialization_statement)
             elif kind == mypy.nodes.ARG_STAR:
-                extra.append(('VarArg', [o.args[i]]))
+                extra.append(('VarArg', [o.arguments[i].variable]))
             elif kind == mypy.nodes.ARG_STAR2:
-                extra.append(('DictVarArg', [o.args[i]]))
+                extra.append(('DictVarArg', [o.arguments[i].variable]))
         a = []
         if args:
             a.append(('Args', args))
@@ -84,13 +85,19 @@ class StrConv(NodeVisitor[str]):
     def visit_import(self, o):
         a = []
         for id, as_id in o.ids:
-            a.append('{} : {}'.format(id, as_id))
+            if as_id is not None:
+                a.append('{} : {}'.format(id, as_id))
+            else:
+                a.append(id)
         return 'Import:{}({})'.format(o.line, ', '.join(a))
 
     def visit_import_from(self, o):
         a = []
         for name, as_name in o.names:
-            a.append('{} : {}'.format(name, as_name))
+            if as_name is not None:
+                a.append('{} : {}'.format(name, as_name))
+            else:
+                a.append(name)
         return 'ImportFrom:{}({}, [{}])'.format(o.line, "." * o.relative + o.id, ', '.join(a))
 
     def visit_import_all(self, o):
@@ -101,7 +108,7 @@ class StrConv(NodeVisitor[str]):
     def visit_func_def(self, o):
         a = self.func_helper(o)
         a.insert(0, o.name())
-        if mypy.nodes.ARG_NAMED in o.arg_kinds:
+        if mypy.nodes.ARG_NAMED in [arg.kind for arg in o.arguments]:
             a.insert(1, 'MaxPos({})'.format(o.max_pos))
         if o.is_abstract:
             a.insert(-1, 'Abstract')
@@ -139,6 +146,8 @@ class StrConv(NodeVisitor[str]):
             a.insert(1, 'Promote({})'.format(o.info._promote))
         if o.info and o.info.tuple_type:
             a.insert(1, ('TupleType', [o.info.tuple_type]))
+        if o.info and o.info.fallback_to_any:
+            a.insert(1, 'FallbackToAny')
         return self.dump(a, o)
 
     def visit_var(self, o):
@@ -363,6 +372,9 @@ class StrConv(NodeVisitor[str]):
     def visit_cast_expr(self, o):
         return self.dump([o.expr, o.type], o)
 
+    def visit_reveal_type_expr(self, o):
+        return self.dump([o.expr], o)
+
     def visit_unary_expr(self, o):
         return self.dump([o.op, o.expr], o)
 
@@ -390,14 +402,17 @@ class StrConv(NodeVisitor[str]):
         return self.dump([o.expr, ('Types', o.types)], o)
 
     def visit_type_var_expr(self, o):
+        import mypy.types
+        a = []
         if o.variance == mypy.nodes.COVARIANT:
-            return self.dump(['Variance(COVARIANT)'], o)
+            a += ['Variance(COVARIANT)']
         if o.variance == mypy.nodes.CONTRAVARIANT:
-            return self.dump(['Variance(CONTRAVARIANT)'], o)
+            a += ['Variance(CONTRAVARIANT)']
         if o.values:
-            return self.dump([('Values', o.values)], o)
-        else:
-            return 'TypeVarExpr:{}()'.format(o.line)
+            a += [('Values', o.values)]
+        if not mypy.types.is_named_instance(o.upper_bound, 'builtins.object'):
+            a += ['UpperBound({})'.format(o.upper_bound)]
+        return self.dump(a, o)
 
     def visit_type_alias_expr(self, o):
         return 'TypeAliasExpr({})'.format(o.type)
@@ -438,3 +453,6 @@ class StrConv(NodeVisitor[str]):
         if not a[1]:
             a[1] = '<empty>'
         return self.dump(a, o)
+
+    def visit_backquote_expr(self, o):
+        return self.dump([o.expr], o)

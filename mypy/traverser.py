@@ -6,11 +6,11 @@ from mypy.visitor import NodeVisitor
 from mypy.nodes import (
     Block, MypyFile, FuncItem, CallExpr, ClassDef, Decorator, FuncDef,
     ExpressionStmt, AssignmentStmt, OperatorAssignmentStmt, WhileStmt,
-    ForStmt, ReturnStmt, AssertStmt, YieldStmt, DelStmt, IfStmt, RaiseStmt,
-    TryStmt, WithStmt, MemberExpr, OpExpr, SliceExpr, CastExpr,
+    ForStmt, ReturnStmt, AssertStmt, DelStmt, IfStmt, RaiseStmt,
+    TryStmt, WithStmt, MemberExpr, OpExpr, SliceExpr, CastExpr, RevealTypeExpr,
     UnaryExpr, ListExpr, TupleExpr, DictExpr, SetExpr, IndexExpr,
     GeneratorExpr, ListComprehension, ConditionalExpr, TypeApplication,
-    FuncExpr, ComparisonExpr, OverloadedFuncDef, YieldFromStmt, YieldFromExpr,
+    FuncExpr, ComparisonExpr, OverloadedFuncDef, YieldFromExpr,
     YieldExpr
 )
 
@@ -21,10 +21,10 @@ T = TypeVar('T')
 class TraverserVisitor(NodeVisitor[T], Generic[T]):
     """A parse tree visitor that traverses the parse tree during visiting.
 
-    It does not peform any actions outside the travelsal. Subclasses
+    It does not peform any actions outside the traversal. Subclasses
     should override visit methods to perform actions during
-    travelsal. Calling the superclass method allows reusing the
-    travelsal implementation.
+    traversal. Calling the superclass method allows reusing the
+    traversal implementation.
     """
 
     # Visit methods
@@ -38,11 +38,14 @@ class TraverserVisitor(NodeVisitor[T], Generic[T]):
             s.accept(self)
 
     def visit_func(self, o: FuncItem) -> T:
-        for i in o.init:
-            if i is not None:
-                i.accept(self)
-        for v in o.args:
-            self.visit_var(v)
+        for arg in o.arguments:
+            init = arg.initialization_statement
+            if init is not None:
+                init.accept(self)
+
+        for arg in o.arguments:
+            self.visit_var(arg.variable)
+
         o.body.accept(self)
 
     def visit_func_def(self, o: FuncDef) -> T:
@@ -94,14 +97,6 @@ class TraverserVisitor(NodeVisitor[T], Generic[T]):
         if o.expr is not None:
             o.expr.accept(self)
 
-    def visit_yield_stmt(self, o: YieldStmt) -> T:
-        if o.expr is not None:
-            o.expr.accept(self)
-
-    def visit_yield_from_stmt(self, o: YieldFromStmt) -> T:
-        if o.expr is not None:
-            o.expr.accept(self)
-
     def visit_del_stmt(self, o: DelStmt) -> T:
         if o.expr is not None:
             o.expr.accept(self)
@@ -145,7 +140,8 @@ class TraverserVisitor(NodeVisitor[T], Generic[T]):
         o.expr.accept(self)
 
     def visit_yield_expr(self, o: YieldExpr) -> T:
-        o.expr.accept(self)
+        if o.expr:
+            o.expr.accept(self)
 
     def visit_call_expr(self, o: CallExpr) -> T:
         for a in o.args:
@@ -171,6 +167,9 @@ class TraverserVisitor(NodeVisitor[T], Generic[T]):
             o.stride.accept(self)
 
     def visit_cast_expr(self, o: CastExpr) -> T:
+        o.expr.accept(self)
+
+    def visit_reveal_type_expr(self, o: RevealTypeExpr) -> T:
         o.expr.accept(self)
 
     def visit_unary_expr(self, o: UnaryExpr) -> T:

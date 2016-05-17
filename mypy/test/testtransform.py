@@ -5,7 +5,8 @@ import os.path
 from typing import Dict, List
 
 from mypy import build
-from mypy.myunit import Suite, run_test
+from mypy.build import BuildSource
+from mypy.myunit import Suite
 from mypy.test.helpers import assert_string_arrays_equal, testfile_pyversion
 from mypy.test.data import parse_test_cases
 from mypy.test.config import test_data_prefix, test_temp_dir
@@ -38,13 +39,14 @@ def test_transform(testcase):
 
     try:
         src = '\n'.join(testcase.input)
-        result = build.build('main',
-                             target=build.SEMANTIC_ANALYSIS,
-                             program_text=src,
+        result = build.build(target=build.SEMANTIC_ANALYSIS,
+                             sources=[BuildSource('main', None, src)],
                              pyversion=testfile_pyversion(testcase.file),
                              flags=[build.TEST_BUILTINS],
                              alt_lib_path=test_temp_dir)
-        a = []
+        a = result.errors
+        if a:
+            raise CompileError(a)
         # Include string representations of the source files in the actual
         # output.
         for fnam in sorted(result.files.keys()):
@@ -74,8 +76,3 @@ class TestTransformVisitor(TransformVisitor):
     def type(self, type):
         assert type is not None
         return type
-
-
-if __name__ == '__main__':
-    import sys
-    run_test(TransformSuite(), sys.argv[1:])

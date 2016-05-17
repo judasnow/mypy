@@ -3,9 +3,8 @@ from typing import cast, List
 from mypy.join import is_similar_callables, combine_similar_callables
 from mypy.types import (
     Type, AnyType, TypeVisitor, UnboundType, Void, ErrorType, NoneTyp, TypeVarType,
-    Instance, CallableType, TupleType, ErasedType, TypeList, UnionType
+    Instance, CallableType, TupleType, ErasedType, TypeList, UnionType, PartialType, DeletedType
 )
-from mypy.sametypes import is_same_type
 from mypy.subtypes import is_subtype
 from mypy.nodes import TypeInfo
 
@@ -28,8 +27,8 @@ def meet_simple(s: Type, t: Type, default_right: bool = True) -> Type:
         return s
     if isinstance(s, UnionType):
         return UnionType.make_simplified_union([meet_types(x, t) for x in s.items])
-    elif not is_overlapping_types(s, t):
-        return Void()
+    elif not is_overlapping_types(s, t, use_promotions=True):
+        return NoneTyp()
     else:
         if default_right:
             return t
@@ -37,22 +36,51 @@ def meet_simple(s: Type, t: Type, default_right: bool = True) -> Type:
             return s
 
 
-def meet_simple_away(s: Type, t: Type) -> Type:
-    if isinstance(s, UnionType):
-        return UnionType.make_simplified_union([x for x in s.items
-                                                if not is_subtype(x, t)])
-    elif not isinstance(s, AnyType) and is_subtype(s, t):
-        return Void()
-    else:
-        return s
+def is_overlapping_types(t: Type, s: Type, use_promotions: bool = False) -> bool:
+    """Can a value of type t be a value of type s, or vice versa?
 
+    Note that this effectively checks against erased types, since type
+    variables are erased at runtime and the overlapping check is based
+    on runtime behavior.
 
-def is_overlapping_types(t: Type, s: Type) -> bool:
-    """Can a value of type t be a value of type s, or vice versa?"""
+    If use_promotions is True, also consider type promotions (int and
+    float would only be overlapping if it's True).
+
+    This does not consider multiple inheritance. For example, A and B in
+    the following example are not considered overlapping, even though
+    via C they can be overlapping:
+
+        class A: ...
+        class B: ...
+        class C(A, B): ...
+
+    The rationale is that this case is usually very unlikely as multiple
+    inheritance is rare. Also, we can't reliably determine whether
+    multiple inheritance actually occurs somewhere in a program, due to
+    stub files hiding implementation details, dynamic loading etc.
+
+    TODO: Don't consider tuples always overlapping.
+    TODO: Don't consider callables always overlapping.
+    TODO: Don't consider type variables with values always overlapping.
+    """
+    # Since we are effectively working with the erased types, we only
+    # need to handle occurrences of TypeVarType at the top level.
+    if isinstance(t, TypeVarType):
+        t = t.erase_to_union_or_bound()
+    if isinstance(s, TypeVarType):
+        s = s.erase_to_union_or_bound()
     if isinstance(t, Instance):
         if isinstance(s, Instance):
             # Only consider two classes non-disjoint if one is included in the mro
             # of another.
+            if use_promotions:
+                # Consider cases like int vs float to be overlapping where
+                # there is only a type promotion relationship but not proper
+                # subclassing.
+                if t.type._promote and is_overlapping_types(t.type._promote, s):
+                    return True
+                if s.type._promote and is_overlapping_types(s.type._promote, t):
+                    return True
             return t.type in s.type.mro or s.type in t.type.mro
     if isinstance(t, UnionType):
         return any(is_overlapping_types(item, s)
@@ -71,7 +99,6 @@ def nearest_builtin_ancestor(type: TypeInfo) -> TypeInfo:
             return base
     else:
         return None
-        assert False, 'No built-in ancestor found for {}'.format(type.name())
 
 
 class TypeMeetVisitor(TypeVisitor[Type]):
@@ -118,18 +145,27 @@ class TypeMeetVisitor(TypeVisitor[Type]):
         else:
             return ErrorType()
 
+    def visit_deleted_type(self, t: DeletedType) -> Type:
+        if not isinstance(self.s, Void) and not isinstance(self.s, ErrorType):
+            if isinstance(self.s, NoneTyp):
+                return self.s
+            else:
+                return t
+        else:
+            return ErrorType()
+
     def visit_erased_type(self, t: ErasedType) -> Type:
         return self.s
 
     def visit_type_var(self, t: TypeVarType) -> Type:
-        if isinstance(self.s, TypeVarType) and (cast(TypeVarType, self.s)).id == t.id:
+        if isinstance(self.s, TypeVarType) and self.s.id == t.id:
             return self.s
         else:
             return self.default(self.s)
 
     def visit_instance(self, t: Instance) -> Type:
         if isinstance(self.s, Instance):
-            si = cast(Instance, self.s)
+            si = self.s
             if t.type == si.type:
                 if is_subtype(t, self.s) or is_subtype(self.s, t):
                     # Combine type arguments. We could have used join below
@@ -152,31 +188,24 @@ class TypeMeetVisitor(TypeVisitor[Type]):
             return self.default(self.s)
 
     def visit_callable_type(self, t: CallableType) -> Type:
-        if isinstance(self.s, CallableType) and is_similar_callables(
-                t, cast(CallableType, self.s)):
-            return combine_similar_callables(t, cast(CallableType, self.s))
+        if isinstance(self.s, CallableType) and is_similar_callables(t, self.s):
+            return combine_similar_callables(t, self.s)
         else:
             return self.default(self.s)
 
     def visit_tuple_type(self, t: TupleType) -> Type:
-        if isinstance(self.s, TupleType) and (
-                cast(TupleType, self.s).length() == t.length()):
+        if isinstance(self.s, TupleType) and self.s.length() == t.length():
             items = []  # type: List[Type]
             for i in range(t.length()):
-                items.append(self.meet(t.items[i],
-                                       (cast(TupleType, self.s)).items[i]))
+                items.append(self.meet(t.items[i], self.s.items[i]))
             # TODO: What if the fallbacks are different?
             return TupleType(items, t.fallback)
         else:
             return self.default(self.s)
 
-    def visit_intersection(self, t):
-        # TODO Obsolete; target overload types instead?
-        # Only support very rudimentary meets between intersection types.
-        if is_same_type(self.s, t):
-            return self.s
-        else:
-            return self.default(self.s)
+    def visit_partial_type(self, t: PartialType) -> Type:
+        # We can't determine the meet of partial types. We should never get here.
+        assert False, 'Internal error'
 
     def meet(self, s, t):
         return meet_types(s, t)

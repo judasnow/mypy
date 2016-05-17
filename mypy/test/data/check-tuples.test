@@ -152,7 +152,10 @@ def f() -> None: pass
 from typing import Tuple
 t1 = None # type: Tuple[A, B]
 t2 = None # type: Tuple[A]
+t3 = None # type: Tuple[A, B, C, D, E]
 a, b = None, None # type: (A, B)
+x = None # type: Tuple[A, B, C]
+y = None # type: Tuple[A, C, E]
 n = 0
 
 a = t1[1] # E: Incompatible types in assignment (expression has type "B", variable has type "A")
@@ -160,15 +163,21 @@ b = t1[0] # E: Incompatible types in assignment (expression has type "A", variab
 t1[2]     # E: Tuple index out of range
 t1[3]     # E: Tuple index out of range
 t2[1]     # E: Tuple index out of range
-t1[n]     # E: Tuple index must an integer literal
+t1[n]     # E: Tuple index must be an integer literal
+t3[n:]    # E: Tuple slice must be an integer literal
 b = t1[(0)] # E: Incompatible types in assignment (expression has type "A", variable has type "B")
 
 a = t1[0]
 b = t1[1]
 a = t1[(0)]
+x = t3[0:3] # type (A, B, C)
+y = t3[0:5:2] # type (A, C, E)
 
 class A: pass
 class B: pass
+class C: pass
+class D: pass
+class E: pass
 [builtins fixtures/tuple.py]
 
 [case testIndexingTuplesWithNegativeIntegers]
@@ -354,6 +363,12 @@ a = 1
 b = ''
 a = '' # E: Incompatible types in assignment (expression has type "str", variable has type "int")
 b = 1  # E: Incompatible types in assignment (expression has type "int", variable has type "str")
+
+[case testMultipleAssignmentWithMixedVariables]
+a = b, c = 1, 1
+x, y = p, q = 1, 1
+u, v, w = r, s = 1, 1 # E: Need more than 2 values to unpack (3 expected)
+d, e = f, g, h = 1, 1 # E: Need more than 2 values to unpack (3 expected)
 
 
 -- Assignment to starred expressions
@@ -736,3 +751,13 @@ fb(bb)
 fb(ab) # E: Argument 1 to "fb" has incompatible type "Tuple[A, B]"; expected Tuple[B, ...]
 fb(aa) # E: Argument 1 to "fb" has incompatible type "Tuple[A, A]"; expected Tuple[B, ...]
 [builtins fixtures/tuple.py]
+
+[case testSubtypingTupleIsContainer]
+from typing import Container
+a = None  # type: Container[str]
+a = ()
+
+[case testSubtypingTupleIsSized]
+from typing import Sized
+a = None  # type: Sized
+a = ()

@@ -5,7 +5,7 @@ from typing import cast, List
 from mypy.types import (
     Type, AnyType, NoneTyp, Void, TypeVisitor, Instance, UnboundType,
     ErrorType, TypeVarType, CallableType, TupleType, ErasedType, TypeList,
-    UnionType, FunctionLike, Overloaded
+    UnionType, FunctionLike, Overloaded, PartialType, DeletedType
 )
 from mypy.maptype import map_instance_to_supertype
 from mypy.subtypes import is_subtype, is_equivalent, is_subtype_ignoring_tvars
@@ -87,7 +87,7 @@ class TypeJoinVisitor(TypeVisitor[Type]):
         if is_subtype(self.s, t):
             return t
         else:
-            return UnionType(t.items + [self.s])
+            return UnionType.make_simplified_union([self.s, t])
 
     def visit_error_type(self, t: ErrorType) -> Type:
         return t
@@ -110,18 +110,24 @@ class TypeJoinVisitor(TypeVisitor[Type]):
         else:
             return self.default(self.s)
 
+    def visit_deleted_type(self, t: DeletedType) -> Type:
+        if not isinstance(self.s, Void):
+            return self.s
+        else:
+            return self.default(self.s)
+
     def visit_erased_type(self, t: ErasedType) -> Type:
         return self.s
 
     def visit_type_var(self, t: TypeVarType) -> Type:
-        if isinstance(self.s, TypeVarType) and (cast(TypeVarType, self.s)).id == t.id:
+        if isinstance(self.s, TypeVarType) and self.s.id == t.id:
             return self.s
         else:
             return self.default(self.s)
 
     def visit_instance(self, t: Instance) -> Type:
         if isinstance(self.s, Instance):
-            return join_instances(t, cast(Instance, self.s))
+            return join_instances(t, self.s)
         elif isinstance(self.s, FunctionLike):
             return join_types(t, self.s.fallback)
         else:
@@ -129,9 +135,8 @@ class TypeJoinVisitor(TypeVisitor[Type]):
 
     def visit_callable_type(self, t: CallableType) -> Type:
         # TODO: Consider subtyping instead of just similarity.
-        if isinstance(self.s, CallableType) and is_similar_callables(
-                t, cast(CallableType, self.s)):
-            return combine_similar_callables(t, cast(CallableType, self.s))
+        if isinstance(self.s, CallableType) and is_similar_callables(t, self.s):
+            return combine_similar_callables(t, self.s)
         elif isinstance(self.s, Overloaded):
             # Switch the order of arguments to that we'll get to visit_overloaded.
             return join_types(t, self.s)
@@ -185,16 +190,19 @@ class TypeJoinVisitor(TypeVisitor[Type]):
         return join_types(t.fallback, s)
 
     def visit_tuple_type(self, t: TupleType) -> Type:
-        if (isinstance(self.s, TupleType) and
-                cast(TupleType, self.s).length() == t.length()):
+        if isinstance(self.s, TupleType) and self.s.length() == t.length():
             items = []  # type: List[Type]
             for i in range(t.length()):
-                items.append(self.join(t.items[i],
-                                       (cast(TupleType, self.s)).items[i]))
+                items.append(self.join(t.items[i], self.s.items[i]))
             # TODO: What if the fallback types are different?
             return TupleType(items, t.fallback)
         else:
             return self.default(self.s)
+
+    def visit_partial_type(self, t: PartialType) -> Type:
+        # We only have partial information so we can't decide the join result. We should
+        # never get here.
+        assert False, "Internal error"
 
     def join(self, s: Type, t: Type) -> Type:
         return join_types(s, t)
@@ -224,7 +232,6 @@ def join_instances(t: Instance, s: Instance) -> Type:
 
     Return ErrorType if the result is ambiguous.
     """
-
     if t.type == s.type:
         # Simplest case: join two types with the same base type (but
         # potentially different arguments).
@@ -253,16 +260,29 @@ def join_instances_via_supertype(t: Instance, s: Instance) -> Type:
         return join_types(t.type._promote, s)
     elif s.type._promote and is_subtype(s.type._promote, t):
         return join_types(t, s.type._promote)
-    res = s
-    mapped = map_instance_to_supertype(t, t.type.bases[0].type)
-    join = join_instances(mapped, res)
-    # If the join failed, fail. This is a defensive measure (this might
-    # never happen).
-    if isinstance(join, ErrorType):
-        return join
-    # Now the result must be an Instance, so the cast below cannot fail.
-    res = cast(Instance, join)
-    return res
+    # Compute the "best" supertype of t when joined with s.
+    # The definition of "best" may evolve; for now it is the one with
+    # the longest MRO.  Ties are broken by using the earlier base.
+    best = None  # type: Type
+    for base in t.type.bases:
+        mapped = map_instance_to_supertype(t, base.type)
+        res = join_instances(mapped, s)
+        if best is None or is_better(res, best):
+            best = res
+    assert best is not None
+    return best
+
+
+def is_better(t: Type, s: Type) -> bool:
+    # Given two possible results from join_instances_via_supertype(),
+    # indicate whether t is the better one.
+    if isinstance(t, Instance):
+        if not isinstance(s, Instance):
+            return True
+        # Use len(mro) as a proxy for the better choice.
+        if len(t.type.mro) > len(s.type.mro):
+            return True
+    return False
 
 
 def is_similar_callables(t: CallableType, s: CallableType) -> bool:
@@ -285,14 +305,10 @@ def combine_similar_callables(t: CallableType, s: CallableType) -> CallableType:
         fallback = t.fallback
     else:
         fallback = s.fallback
-    return CallableType(arg_types,
-                    t.arg_kinds,
-                    t.arg_names,
-                    join_types(t.ret_type, s.ret_type),
-                    fallback,
-                    None,
-                    t.variables)
-    return s
+    return t.copy_modified(arg_types=arg_types,
+                           ret_type=join_types(t.ret_type, s.ret_type),
+                           fallback=fallback,
+                           name=None)
 
 
 def object_from_instance(instance: Instance) -> Instance:

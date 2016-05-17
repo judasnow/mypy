@@ -593,6 +593,24 @@ main:2: error: Cannot infer type of lambda
 main:3: error: Cannot infer type of lambda
 main:3: error: Incompatible types in assignment (expression has type Callable[[], A], variable has type Callable[[A], A])
 
+[case testEllipsisContextForLambda]
+from typing import Callable
+f1 = lambda x: 1 # type: Callable[..., int]
+f2 = lambda: 1 # type: Callable[..., int]
+f3 = lambda *args, **kwargs: 1 # type: Callable[..., int]
+f4 = lambda x: x # type: Callable[..., int]
+g = lambda x: 1 # type: Callable[..., str]
+[builtins fixtures/dict.py]
+[out]
+main:6: error: Incompatible return value type: expected builtins.str, got builtins.int
+main:6: error: Incompatible types in assignment (expression has type Callable[[Any], int], variable has type Callable[..., str])
+
+[case testEllipsisContextForLambda2]
+from typing import TypeVar, Callable
+T = TypeVar('T')
+def foo(arg: Callable[..., T]) -> None: pass
+foo(lambda: 1)
+
 
 -- Overloads + generic functions
 -- -----------------------------
@@ -721,3 +739,12 @@ def g(y: object) -> None: pass
 a = [1]
 g(f(a))
 [builtins fixtures/list.py]
+
+[case testStar2Context]
+from typing import Any, Dict, Tuple, Iterable
+def f1(iterable: Iterable[Tuple[str, Any]] = None) -> None:
+    f2(**dict(iterable))
+def f2(iterable: Iterable[Tuple[str, Any]], **kw: Any) -> None:
+    pass
+[builtins fixtures/dict.py]
+[out]

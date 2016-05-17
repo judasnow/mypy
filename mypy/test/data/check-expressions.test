@@ -900,11 +900,14 @@ a[:None]
 
 
 [case testStringInterpolationType]
-from typing import Any
-i, f, s = None, None, None # type: (int, float, str)
+from typing import Tuple
+i, f, s, t = None, None, None, None # type: (int, float, str, Tuple[int])
 '%d' % i
 '%f' % f
 '%s' % s
+'%d' % (f,)
+'%d' % (s,) # E: Incompatible types in string interpolation (expression has type "str", placeholder has type "Union[int, float]")
+'%d' % t
 '%d' % s  # E: Incompatible types in string interpolation (expression has type "str", placeholder has type "Union[int, float]")
 '%f' % s  # E: Incompatible types in string interpolation (expression has type "str", placeholder has type "Union[int, float]")
 [builtins fixtures/primitives.py]
@@ -956,7 +959,7 @@ a = None # type: Any
 '%*.*f' % (4, 2, 3.14)
 [builtins fixtures/primitives.py]
 
-[case testStringInterpolationFlagsAndLengthModifers]
+[case testStringInterpolationFlagsAndLengthModifiers]
 '%04hd' % 1
 '%-.4ld' % 1
 '%+*Ld' % (1, 1)
@@ -1014,6 +1017,16 @@ di = None # type: Dict[int, int]
 '%(a).1d' % {'a': 1}
 '%(a)#1.1ld' % {'a': 1}
 [builtins fixtures/dict.py]
+
+[case testStringInterpolationFloatPrecision]
+'%.f' % 1.2
+'%.3f' % 1.2
+'%.f' % 'x'
+'%.3f' % 'x'
+[builtins fixtures/primitives.py]
+[out]
+main:3: error: Incompatible types in string interpolation (expression has type "str", placeholder has type "Union[int, float]")
+main:4: error: Incompatible types in string interpolation (expression has type "str", placeholder has type "Union[int, float]")
 
 
 -- Lambdas
@@ -1093,6 +1106,17 @@ a = None # type: List[A]
 o = [x for x in a] # type: List[object]
 class A: pass
 [builtins fixtures/for.py]
+
+[case testSimpleListComprehensionInClassBody]
+from typing import List
+class A:
+    a = None # type: List[A]
+    a = [x for x in a]
+    b = [x for x in a] # type: List[B] # E: List comprehension has incompatible type List[A]
+class B: pass
+[builtins fixtures/for.py]
+[out]
+main: note: In class "A":
 
 
 -- Set comprehension
@@ -1298,6 +1322,174 @@ class str: pass
 def f(x: int) -> None:
     x = yield f('')
     x = 1
+[builtins fixtures/for.py]
 [out]
 main: note: In function "f":
+main:1: error: The return type of a generator function should be "Generator" or one of its supertypes
 main:2: error: Argument 1 to "f" has incompatible type "str"; expected "int"
+
+[case testYieldExpressionWithNone]
+from typing import Iterator
+def f(x: int) -> Iterator[None]:
+    (yield)
+[builtins fixtures/for.py]
+[out]
+
+
+-- Yield from expression
+-- ----------------
+
+
+[case testYieldFromIteratorHasNoValue]
+from typing import Iterator
+def f() -> Iterator[int]:
+    yield 5
+def g() -> Iterator[int]:
+    a = yield from f()
+[out]
+main: note: In function "g":
+main:5: error: Function does not return a value
+
+[case testYieldFromGeneratorHasValue]
+from typing import Iterator, Generator
+def f() -> Generator[int, None, str]:
+    yield 5
+    return "ham"
+def g() -> Iterator[int]:
+    a = "string"
+    a = yield from f()
+[out]
+
+
+-- dict(...)
+-- ---------
+
+
+-- Note that the stub used in unit tests does not have all overload
+-- variants, but it should not matter.
+
+[case testDictWithKeywordArgsOnly]
+from typing import Dict, Any
+d1 = dict(a=1, b=2) # type: Dict[str, int]
+d2 = dict(a=1, b='') # type: Dict[str, int] # E: List item 1 has incompatible type "Tuple[str, str]"
+d3 = dict(a=1) # type: Dict[int, int] # E: List item 0 has incompatible type "Tuple[str, int]"
+d4 = dict(a=1, b=1)
+d4.xyz # E: Dict[str, int] has no attribute "xyz"
+d5 = dict(a=1, b='') # type: Dict[str, Any]
+[builtins fixtures/dict.py]
+
+[case testDictWithoutKeywordArgs]
+from typing import Dict
+d = dict() # E: Need type annotation for variable
+d2 = dict() # type: Dict[int, str]
+dict(undefined) # E: Name 'undefined' is not defined
+[builtins fixtures/dict.py]
+
+[case testDictFromList]
+from typing import Dict
+d = dict([(1, 'x'), (2, 'y')])
+d() # E: Dict[int, str] not callable
+d2 = dict([(1, 'x')]) # type: Dict[str, str] # E: List item 0 has incompatible type "Tuple[int, str]"
+[builtins fixtures/dict.py]
+
+[case testDictFromIterableAndKeywordArg]
+from typing import Dict
+it = [('x', 1)]
+
+d = dict(it, x=1)
+d() # E: Dict[str, int] not callable
+
+d2 = dict(it, x='') # E: Cannot infer type argument 2 of "dict"
+d2() # E: Dict[Any, Any] not callable
+
+d3 = dict(it, x='') # type: Dict[str, int] # E: Argument 2 to "dict" has incompatible type "str"; expected "int"
+[builtins fixtures/dict.py]
+
+[case testDictFromIterableAndKeywordArg2]
+it = [(1, 'x')]
+dict(it, x='y') # E: Keyword argument only valid with "str" key type in call to "dict"
+[builtins fixtures/dict.py]
+
+[case testDictFromIterableAndKeywordArg3]
+d = dict([], x=1)
+d() # E: Dict[str, int] not callable
+[builtins fixtures/dict.py]
+
+[case testDictFromIterableAndStarStarArgs]
+from typing import Dict
+it = [('x', 1)]
+
+kw = {'x': 1}
+d = dict(it, **kw)
+d() # E: Dict[str, int] not callable
+
+kw2 = {'x': ''}
+d2 = dict(it, **kw2) # E: Cannot infer type argument 2 of "dict"
+d2() # E: Dict[Any, Any] not callable
+
+d3 = dict(it, **kw2) # type: Dict[str, int] # E: Argument 2 to "dict" has incompatible type **Dict[str, str]; expected "int"
+[builtins fixtures/dict.py]
+
+[case testDictFromIterableAndStarStarArgs2]
+it = [(1, 'x')]
+kw = {'x': 'y'}
+d = dict(it, **kw) # E: Keyword argument only valid with "str" key type in call to "dict"
+d() # E: Dict[int, str] not callable
+[builtins fixtures/dict.py]
+
+[case testUserDefinedClassNamedDict]
+from typing import Generic, TypeVar
+T = TypeVar('T')
+S = TypeVar('S')
+class dict(Generic[T, S]):
+    def __init__(self, x: T, **kwargs: T) -> None: pass
+dict(1, y=1)
+[builtins fixtures/dict.py]
+
+[case testSpecialSignatureForSubclassOfDict]
+from typing import TypeVar, Dict, Generic
+T = TypeVar('T')
+S = TypeVar('S')
+class D1(dict): pass # Implicit base class Dict[Any, Any]
+D1([(1, 2)], x=1)
+class D2(Dict[T, S], Generic[T, S]): pass
+da = D2([('x', 2)], x=1)
+da() # E: D2[str, int] not callable
+D2([(1, 2)], x=1) # E: Keyword argument only valid with "str" key type in call to "dict"
+db = D2(x=1)
+db() # E: D2[str, int] not callable
+[builtins fixtures/dict.py]
+
+[case testSpecialSignatureForSubclassOfDict2]
+from typing import TypeVar, Dict, Generic
+T = TypeVar('T')
+class D(Dict[str, T], Generic[T]): pass
+D([('x', 1)], x=1)
+[builtins fixtures/dict.py]
+
+[case testOverridingSpecialSignatureInSubclassOfDict]
+from typing import TypeVar, Dict, Generic
+T = TypeVar('T')
+S = TypeVar('S')
+class D(Dict[T, S], Generic[T, S]):
+    def __init__(self, x: S, y: T) -> None: pass
+d = D(1, y='')
+d() # E: D[str, int] not callable
+[builtins fixtures/dict.py]
+
+[case testRevealType]
+reveal_type(1) # E: Revealed type is 'builtins.int'
+
+[case testUndefinedRevealType]
+reveal_type(x)
+[out]
+main:1: error: Name 'x' is not defined
+main:1: error: Revealed type is 'Any'
+
+[case testUserDefinedRevealType]
+def reveal_type(x: int) -> None: pass
+reveal_type("foo") # E: Argument 1 to "reveal_type" has incompatible type "str"; expected "int"
+
+[case testRevealTypeVar]
+reveal_type = 1
+1 + "foo" # E: Unsupported left operand type for + ("int")

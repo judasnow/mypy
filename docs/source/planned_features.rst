@@ -9,9 +9,9 @@ Type checking of None
 
 Currently, ``None`` is a valid value for each type, similar to
 ``null`` or ``NULL`` in many languages. However, it is likely that
-this decision will be reversed, and types do not include ``None``
-default. The ``Optional`` type modifier would be used to define a type
-variant that includes ``None``, such as ``Optional[int]``:
+this decision will be reversed, and types would not include ``None``
+by default. The ``Optional`` type modifier would be used to define
+a type variant that includes ``None``, such as ``Optional[int]``:
 
 .. code-block:: python
 
@@ -41,24 +41,5 @@ benefit from more powerful type inference:
            # The inferred type of x is just int here.
            return x + 1
 
-We would infer the type of ``x`` to be int in the else block due to the
+We would infer the type of ``x`` to be ``int`` in the else block due to the
 check against ``None`` in the if condition.
-
-More general type inference
----------------------------
-
-It may be useful to support type inference also for variables defined
-in multiple locations in an if/else statement, even if the initializer
-types are different:
-
-.. code-block:: python
-
-   if x:
-       y = None     # First definition of y
-   else:
-       y = 'a'      # Second definition of y
-
-In the above example, both of the assignments would be used in type
-inference, and the type of ``y`` would be ``str``. However, it is not
-obvious whether this would be generally desirable in more complex
-cases.

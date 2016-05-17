@@ -17,10 +17,11 @@ import sys
 
 import typing
 
-from mypy.myunit import Suite, run_test, SkipTestCaseException
+from mypy.myunit import Suite, SkipTestCaseException
 from mypy.test.config import test_data_prefix, test_temp_dir
 from mypy.test.data import parse_test_cases
 from mypy.test.helpers import assert_string_arrays_equal
+from mypy.util import try_find_python2_interpreter
 
 
 # Files which contain test case descriptions.
@@ -32,8 +33,6 @@ python_34_eval_files = ['pythoneval-asyncio.test',
 
 # Path to Python 3 interpreter
 python3_path = sys.executable
-
-default_python2_interpreter = ['python2', 'python', '/usr/bin/python']
 
 
 class PythonEvaluationSuite(Suite):
@@ -57,11 +56,11 @@ def test_python_evaluation(testcase):
             # Skip, can't find a Python 2 interpreter.
             raise SkipTestCaseException()
         interpreter = python2_interpreter
-        args = ['--py2']
+        args = ['--py2', '-f']
         py2 = True
     else:
         interpreter = python3_path
-        args = []
+        args = ['-f']
         py2 = False
     # Write the program to a file.
     program = '_program.py'
@@ -69,25 +68,25 @@ def test_python_evaluation(testcase):
     with open(program_path, 'w') as file:
         for s in testcase.input:
             file.write('{}\n'.format(s))
-    # Set up module path.
-    typing_path = os.path.join(os.getcwd(), 'lib-typing', '3.2')
-    assert os.path.isdir(typing_path)
-    env = os.environ.copy()
-    env['PYTHONPATH'] = os.pathsep.join([typing_path, os.getcwd()])
     # Type check the program.
+    # This uses the same PYTHONPATH as the current process.
     process = subprocess.Popen([python3_path,
-                                os.path.join(os.getcwd(), 'scripts', 'mypy')] + args + [program],
+                                os.path.join(testcase.old_cwd, 'scripts', 'mypy')]
+                            + args + [program],
                                stdout=subprocess.PIPE,
                                stderr=subprocess.STDOUT,
-                               cwd=test_temp_dir,
-                               env=env)
+                               cwd=test_temp_dir)
     outb = process.stdout.read()
     # Split output into lines.
     out = [s.rstrip('\n\r') for s in str(outb, 'utf8').splitlines()]
     if not process.wait():
-        if py2:
-            typing_path = os.path.join(os.getcwd(), 'lib-typing', '2.7')
-            env['PYTHONPATH'] = typing_path
+        # Set up module path for the execution.
+        # This needs the typing module but *not* the mypy module.
+        vers_dir = '2.7' if py2 else '3.2'
+        typing_path = os.path.join(testcase.old_cwd, 'lib-typing', vers_dir)
+        assert os.path.isdir(typing_path)
+        env = os.environ.copy()
+        env['PYTHONPATH'] = typing_path
         process = subprocess.Popen([interpreter, program],
                                    stdout=subprocess.PIPE,
                                    stderr=subprocess.STDOUT,
@@ -101,20 +100,3 @@ def test_python_evaluation(testcase):
     assert_string_arrays_equal(testcase.output, out,
                                'Invalid output ({}, line {})'.format(
                                    testcase.file, testcase.line))
-
-
-def try_find_python2_interpreter():
-    for interpreter in default_python2_interpreter:
-        try:
-            process = subprocess.Popen([interpreter, '-V'], stdout=subprocess.PIPE,
-                                       stderr=subprocess.STDOUT)
-            stdout, stderr = process.communicate()
-            if b'Python 2.7' in stdout:
-                return interpreter
-        except OSError:
-            pass
-    return None
-
-
-if __name__ == '__main__':
-    run_test(PythonEvaluationSuite(), sys.argv[1:])

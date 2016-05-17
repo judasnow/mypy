@@ -3,10 +3,12 @@ from typing import cast, List, Dict, Callable
 from mypy.types import (
     Type, AnyType, UnboundType, TypeVisitor, ErrorType, Void, NoneTyp,
     Instance, TypeVarType, CallableType, TupleType, UnionType, Overloaded, ErasedType, TypeList,
-    is_named_instance
+    PartialType, DeletedType, is_named_instance
 )
 import mypy.applytype
 import mypy.constraints
+# Circular import; done in the function instead.
+# import mypy.solve
 from mypy import messages, sametypes
 from mypy.nodes import CONTRAVARIANT, COVARIANT
 from mypy.maptype import map_instance_to_supertype
@@ -58,6 +60,19 @@ def is_equivalent(a: Type, b: Type,
     return is_subtype(a, b, type_parameter_checker) and is_subtype(b, a, type_parameter_checker)
 
 
+def satisfies_upper_bound(a: Type, upper_bound: Type) -> bool:
+    """Is 'a' valid value for a type variable with the given 'upper_bound'?
+
+    Same as is_subtype except that Void is considered to be a subtype of
+    any upper_bound. This is needed in a case like
+
+        def f(g: Callable[[], T]) -> T: ...
+        def h() -> None: ...
+        f(h)
+    """
+    return isinstance(a, Void) or is_subtype(a, upper_bound)
+
+
 class SubtypeVisitor(TypeVisitor[bool]):
 
     def __init__(self, right: Type,
@@ -89,7 +104,12 @@ class SubtypeVisitor(TypeVisitor[bool]):
     def visit_erased_type(self, left: ErasedType) -> bool:
         return True
 
+    def visit_deleted_type(self, left: DeletedType) -> bool:
+        return True
+
     def visit_instance(self, left: Instance) -> bool:
+        if left.type.fallback_to_any:
+            return True
         right = self.right
         if isinstance(right, Instance):
             if left.type._promote and is_subtype(left.type._promote,
@@ -114,7 +134,7 @@ class SubtypeVisitor(TypeVisitor[bool]):
         if isinstance(right, TypeVarType):
             return left.id == right.id
         else:
-            return is_named_instance(self.right, 'builtins.object')
+            return is_subtype(left.upper_bound, self.right)
 
     def visit_callable_type(self, left: CallableType) -> bool:
         right = self.right
@@ -137,7 +157,10 @@ class SubtypeVisitor(TypeVisitor[bool]):
                 target_item_type = right.args[0]
                 return all(is_subtype(item, target_item_type)
                            for item in left.items)
+            elif is_named_instance(right, 'typing.Sized'):
+                return True
             elif (is_named_instance(right, 'typing.Iterable') or
+                  is_named_instance(right, 'typing.Container') or
                   is_named_instance(right, 'typing.Sequence') or
                   is_named_instance(right, 'typing.Reversible')):
                 iter_type = right.args[0]
@@ -182,6 +205,10 @@ class SubtypeVisitor(TypeVisitor[bool]):
         return all(is_subtype(item, self.right, self.check_type_parameter)
                    for item in left.items)
 
+    def visit_partial_type(self, left: PartialType) -> bool:
+        # This is indeterminate as we don't really know the complete type yet.
+        raise RuntimeError
+
 
 def is_callable_subtype(left: CallableType, right: CallableType,
                         ignore_return: bool = False) -> bool:
@@ -190,12 +217,21 @@ def is_callable_subtype(left: CallableType, right: CallableType,
     # Non-type cannot be a subtype of type.
     if right.is_type_obj() and not left.is_type_obj():
         return False
-    if right.variables:
-        # Subtyping is not currently supported for generic function as the supertype.
-        return False
+
+    # A callable L is a subtype of a generic callable R if L is a
+    # subtype of every type obtained from R by substituting types for
+    # the variables of R. We can check this by simply leaving the
+    # generic variables of R as type variables, effectively varying
+    # over all possible values.
+
+    # It's okay even if these variables share ids with generic
+    # type variables of L, because generating and solving
+    # constraints for the variables of L to make L a subtype of R
+    # (below) treats type variables on the two sides as independent.
+
     if left.variables:
         # Apply generic type variables away in left via type inference.
-        left = unify_generic_callable(left, right)
+        left = unify_generic_callable(left, right, ignore_return=ignore_return)
         if left is None:
             return False
 
@@ -247,15 +283,21 @@ def is_var_arg_callable_subtype_helper(left: CallableType, right: CallableType) 
         return is_subtype(right.arg_types[-1], left.arg_types[-1])
 
 
-def unify_generic_callable(type: CallableType, target: CallableType) -> CallableType:
+def unify_generic_callable(type: CallableType, target: CallableType,
+                           ignore_return: bool) -> CallableType:
     """Try to unify a generic callable type with another callable type.
 
     Return unified CallableType if successful; otherwise, return None.
     """
+    import mypy.solve
     constraints = []  # type: List[mypy.constraints.Constraint]
     for arg_type, target_arg_type in zip(type.arg_types, target.arg_types):
         c = mypy.constraints.infer_constraints(
             arg_type, target_arg_type, mypy.constraints.SUPERTYPE_OF)
+        constraints.extend(c)
+    if not ignore_return:
+        c = mypy.constraints.infer_constraints(
+            type.ret_type, target.ret_type, mypy.constraints.SUBTYPE_OF)
         constraints.extend(c)
     type_var_ids = [tvar.id for tvar in type.variables]
     inferred_vars = mypy.solve.solve_constraints(type_var_ids, constraints)
